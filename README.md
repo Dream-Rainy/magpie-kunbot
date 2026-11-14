@@ -4,12 +4,19 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
 使用 API Key 登录，直接读取站点发布的模型目录而非硬编码模型列表，模型选择器会自动显示站点当前提供的模型。当 Key 具备专有模型访问权限（Proprietary Access）时会追加专有模型，并将 Pt 余额作为额度上报。
 
-状态站固定为 `ant.kunbot.org`；登录时可以填 `Request Base URL`，它只重写实际的模型请求，不影响目录、模型列表和余额查询：
+状态站固定为 `ant.kunbot.org`；登录时可以填 `Request Base URL`，它只重写实际的模型请求，不影响目录、模型列表和余额查询。它可以有三种写法：
+
+| 写法 | 说明 |
+| --- | --- |
+| 留空 | 每个模型使用目录给它的地址。一条 Key 的多条线路各有各的 Base URL 时用这种（推荐） |
+| 一个 URL | 所有模型请求都改发到这个地址，路径保持不变 |
+| `线路=URL` 列表 | 只重写列出的线路，其余仍用目录地址。线路名是模型键的第一段（`hikari`、`maid` 等），`proprietary` 是专有模型网关，`*` 是所有未单列线路的默认值 |
 
 | 地址 | 说明 |
 | --- | --- |
 | `ant.kunbot.org` | 固定状态站：提供模型目录、公告与余额鉴权会话 |
-| 目录返回值 / Request Base URL | 模型网关：聊天、图像与私有模型请求；可选 Base URL 会覆盖请求主机，保留原路径 |
+| 目录返回值 | 模型网关：每条线路自己的 Base URL，聊天、图像与私有模型请求都发往对应模型自己的地址 |
+| Request Base URL | 可选覆盖：单个 URL 覆盖全部线路，`线路=URL` 只覆盖指定线路，均保留原路径 |
 
 ## 功能特性
 
@@ -36,6 +43,51 @@ kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
 
 聊天与图像模型地址由站点目录和路由列表提供，专有模型地址由专有模型接口提供。
 
+## 一个 Key，多个 Base URL
+
+magpie 选择请求地址的顺序是：
+
+1. `auth.loader` 返回的 `baseURL`；
+2. 模型自己的 `provider.api`（`config` 钩子）或 `api.url`（`provider.models` 钩子）；
+3. 提供商的 `api`；
+4. AI SDK 包自己的默认地址。
+
+所以一个 Key 要对应多个 Base URL，正确做法是让**每个模型带自己的地址**，而不是给账号设一个全局 `baseURL`：
+
+- `config` 钩子把目录里每条线路的 `baseUrl` 写到该线路模型的 `provider: { npm, api }`；
+- `provider.models` 钩子把它写成模型级 `api: { id, url, npm }`；
+- `auth.loader` 故意不返回 `baseURL`，否则 magpie 会让它覆盖所有模型地址。
+
+目录本身已经是多地址的（`.../hikari/v1`、`.../maid/v1`……），因此一个 Key 只登录一次就能用全部线路；登录时 `Request Base URL` 留空即可。
+
+只有要把部分线路改到代理或镜像时才需要填 `Request Base URL`：单个 URL 覆盖全部线路，`线路=URL` 只覆盖指定线路，`*` 作为未单列线路的默认值。覆盖在 loader 的 `fetch` 里按请求路径的第一段选择，仍然使用同一个 Key，例如：
+
+```text
+maid=https://proxy.example/maid, uni=https://proxy.example/uni
+```
+
+也可以只写一个地址：
+
+```text
+https://proxy.example
+```
+
+### 同一服务的镜像分流
+
+如果两个地址是同一套服务的镜像（不是目录里的不同线路），用两个账号：
+
+1. 第一次登录：`Request Base URL` 填主站（或留空用目录地址），`Account name` 填 `primary`，`API Key` 填同一个。
+2. 第二次登录：`Request Base URL` 填镜像，`Account name` 填 `mirror`，`API Key` 仍填同一个。
+3. 让 magpie 在账号间分流：
+
+```sh
+magpie provider set kunbot routing=rotate
+```
+
+要按权重就改成 `routing=weight`，要先耗尽主站再切镜像就用 `routing=drain`。模型 ID 仍然只有一套 `kunbot/<route>/<model>`，两个账号会分别显示额度（同一个 Key 的余额会读两次）。
+
+注意 `Request Base URL` 是前缀，会保留目录里的路径：目录线路本身是 `https://anthropic.kunbot.art/<route>/v1`，所以镜像应填 `https://mirror.example`，不要填 `https://mirror.example/v1`，否则会变成 `/v1/<route>/v1/...`。如果镜像只提供裸 `/v1/chat/completions`、没有 `/<route>/v1` 路径，它不能直接复用这个目录，需要单独建模型或提供商，再用 routing group 分流。
+
 ## 安装
 
 图像模型需要 magpie `0.1.3423` 或更新版本；更早的版本只按模型名判断图像模型。
@@ -58,9 +110,9 @@ magpie plugin add ./kunbot-magpie-plugin
 magpie plugin login kunbot
 ```
 
-先输入 `Request Base URL`（留空使用目录里的地址，只影响模型请求），再输入 API Key。
+先输入 `Request Base URL`（留空使用目录里每条线路自己的地址；也可填 `线路=URL` 只覆盖部分线路。它只影响模型请求），再输入 `Account name`（留空表示第一个账号；镜像分流时给第二个账号起不同名字），最后输入 API Key。
 
-在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录，按提示填写 Request Base URL 和 API Key。
+在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录，按提示填写 Request Base URL、Account name 和 API Key。
 
 ## 模型名称规则
 
@@ -94,8 +146,8 @@ kunbot/gpt-5.6
 
 API Key 存放在 magpie 的 `plugin-auth.json`（权限模式 600）中。
 
-- **模型请求**：带 `Authorization: Bearer <key>` 请求头发送至目录提供的模型网关地址；如果登录时填了 Request Base URL，则请求主机替换为该地址，路径保持不变。
-- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向固定状态站 `ant.kunbot.org` 提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。如果不想向状态站发送 Key，不执行 `magpie quota` 即可，模型请求完全不受影响。
+- **模型请求**：带 `Authorization: Bearer <key>` 请求头发送至目录提供的模型网关地址；如果登录时填了 Request Base URL，则按线路（或全部线路）替换请求主机，路径保持不变。
+- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向固定状态站 `ant.kunbot.org` 提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。专有模型开放时，构建模型列表也要用同一鉴权决定是否列出专有模型，所以模型列表刷新同样会发送 Key（当前站点未开放专有模型，此路径不触发）。开源线路的模型请求本身不经过状态站。
 
 ## 目录结构
 

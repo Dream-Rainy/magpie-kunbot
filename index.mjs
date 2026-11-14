@@ -26,7 +26,7 @@
 // written here. A Base URL given at sign-in only rewrites model requests.
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.1.4"
+const CLIENT = "magpie-kunbot/0.1.7"
 
 // The status site: the one address the plugin knows. It serves the catalogs
 // and holds the balance session; the model gateway is a different host, and
@@ -48,6 +48,45 @@ const normalizeBase = (value) => {
   }
 }
 
+const ROUTE_KEY = /^[a-z0-9][a-z0-9._-]*$/i
+
+// A sign-in may give one base for every route, or a route=base map for as
+// many routes as it likes. A route is the first path segment of the model's
+// catalog address (`.../maid/v1`), `proprietary` for the paid gateway, and
+// `*` for every route no other key names.
+const normalizeBaseMap = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const out = {}
+  for (const [key, raw] of Object.entries(value)) {
+    const base = normalizeBase(raw)
+    if (base) out[String(key).trim().toLowerCase()] = base
+  }
+  return Object.keys(out).length ? out : null
+}
+
+const parseBaseOverrides = (value) => {
+  const raw = String(value ?? "").trim()
+  if (!raw) return {}
+  // A URL may contain `=`, so a lone address is read as one before the
+  // route=URL form is tried.
+  if (/^https?:\/\//i.test(raw)) {
+    const base = normalizeBase(raw)
+    return base === null ? null : { baseURL: base }
+  }
+  const map = {}
+  for (const part of raw.split(/[,;\n]+/)) {
+    const item = part.trim()
+    if (!item) continue
+    const eq = item.indexOf("=")
+    if (eq <= 0) return null
+    const key = item.slice(0, eq).trim().toLowerCase()
+    const base = normalizeBase(item.slice(eq + 1))
+    if ((key !== "*" && !ROUTE_KEY.test(key)) || !base) return null
+    map[key] = base
+  }
+  return Object.keys(map).length ? { baseURLs: map } : null
+}
+
 const urlOf = (input) => (typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? String(input))
 
 const rewriteRequest = (input, base) => {
@@ -57,6 +96,28 @@ const rewriteRequest = (input, base) => {
   target.host = root.host
   target.pathname = `${root.pathname.replace(/\/+$/, "")}${target.pathname}`.replace(/\/{2,}/g, "/")
   return target.href
+}
+
+const PROTOCOL_SEGMENTS = new Set(["v1", "messages", "responses", "chat", "images"])
+
+// The route an outgoing URL belongs to: the first path segment of a model
+// route (`/maid/v1/...`), or `proprietary` for the gateway root, whose paths
+// start with the protocol's own segment (`/v1/messages`, `/messages`).
+const routeOf = (input) => {
+  try {
+    const first = new URL(urlOf(input)).pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? ""
+    return !first || PROTOCOL_SEGMENTS.has(first) ? "proprietary" : first
+  } catch {
+    return ""
+  }
+}
+
+// One override per route. Routes not named keep the catalog's address; `*`
+// is the one every unnamed route falls back to.
+const baseFor = (input, map, fallback) => {
+  if (!map) return fallback
+  const route = routeOf(input)
+  return map[route] ?? map["*"] ?? fallback
 }
 
 // The reasoning efforts magpie's agents already know how to send. A route's
@@ -139,7 +200,7 @@ function modelsFromCatalog(catalog) {
         limit: { context: ctx ?? 200000, ...(max ? { output: max } : {}) },
         reasoning: m?.reasoning === true,
         tool_call: true,
-        modalities: { input },
+        modalities: { input, output: ["text"] },
         ...(num(cost?.input) != null || num(cost?.output) != null
           ? {
               cost: {
@@ -180,6 +241,8 @@ function proprietaryModels(feed) {
       limit: { context: 200000, output: 32000 },
       reasoning: true,
       tool_call: true,
+      modalities: { input: ["text", "image"], output: ["text"] },
+      cost: {},
       // The gateway meters output tokens in Pt and refuses a key that has no
       // Proprietary Access, so these are not free: magpie should not spend
       // them first.
@@ -227,40 +290,67 @@ function imagesFromOpenweight(feed) {
         name: id,
         id,
         provider: { npm: "@ai-sdk/openai-compatible", api: `${base}/${slug}/v1` },
+        limit: { context: 0, output: 0 },
         modalities: { input: ["text"], output: ["image"] },
         reasoning: false,
         tool_call: false,
+        cost: {},
+        variants: {},
       }
     }
   }
   return Object.keys(out).length ? out : null
 }
 
-const MODALITIES = ["text", "image", "audio", "video"]
-const modalitiesOf = (list) => Object.fromEntries(MODALITIES.map((k) => [k, (list ?? ["text"]).includes(k)]))
+const MODALITIES = ["text", "image", "audio", "video", "pdf"]
+const modalitiesOf = (list, fallback = ["text"]) =>
+  Object.fromEntries(MODALITIES.map((k) => [k, (Array.isArray(list) && list.length ? list : fallback).includes(k)]))
 
-function imageModelForHook(template, m) {
+const costOf = (cost) => ({
+  input: num(cost?.input) ?? 0,
+  output: num(cost?.output) ?? 0,
+  cache: {
+    read: num(cost?.cacheRead) ?? num(cost?.cache_read) ?? 0,
+    write: num(cost?.cacheWrite) ?? num(cost?.cache_write) ?? 0,
+  },
+})
+
+// `provider.models` returns OpenCode's Model, not the config hook's model.
+// magpie reads capabilities.reasoning/toolcall/input/output and
+// cost.cache.read/write here; the config hook's reasoning, tool_call,
+// modalities and cache_read keys are ignored on this path. The first model
+// is only a source of defaults (headers, options, temperature), never of the
+// capabilities themselves: otherwise a text-only route inherits another
+// route's image input.
+function hookModel(template, m) {
   const base = { ...(template ?? {}) }
-  delete base.id
-  delete base.provider
+  const input = modalitiesOf(m.modalities?.input)
+  const output = modalitiesOf(m.modalities?.output, ["text"])
   return {
     ...base,
+    id: m.id,
     name: m.name,
-    limit: { context: 0, output: 0 },
-    reasoning: false,
-    tool_call: false,
-    modalities: m.modalities,
+    api: {
+      id: m.id,
+      // No fallback to the template's address: that is one route's endpoint,
+      // not a default for every other model. A missing address is a catalog
+      // problem, and magpie should fail loudly rather than send it elsewhere.
+      url: m.provider?.api ?? "",
+      npm: m.provider?.npm ?? base.api?.npm ?? "@ai-sdk/openai-compatible",
+    },
+    limit: m.limit ?? base.limit ?? { context: 0, output: 0 },
     capabilities: {
       ...(base.capabilities ?? {}),
-      reasoning: false,
-      attachment: false,
-      toolcall: false,
-      input: modalitiesOf(m.modalities?.input),
-      output: modalitiesOf(m.modalities?.output),
+      temperature: base.capabilities?.temperature ?? true,
+      reasoning: m.reasoning === true,
+      toolcall: m.tool_call !== false,
+      attachment: MODALITIES.some((k) => k !== "text" && input[k]),
+      input,
+      output,
     },
-    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-    variants: {},
-    api: { id: m.id, url: m.provider.api, npm: m.provider.npm },
+    cost: costOf(m.cost),
+    variants: m.variants ?? {},
+    ...(m.rate !== undefined ? { rate: m.rate } : {}),
   }
 }
 
@@ -362,10 +452,10 @@ export const KunbotAntPlugin = async ({ client }) => {
       cfg.provider[PROVIDER] ??= {
         name: "kunbot",
         npm: "@ai-sdk/openai-compatible",
-        // Only a fallback. Every model below carries the endpoint it is
-        // actually served from, so no request is sent here; the status site
-        // is not a model endpoint.
-        api: SITE,
+        // There is no provider-wide address: every model carries the route
+        // it is served from. Leaving this empty makes a model with no
+        // address fail instead of quietly sending it to the status site.
+        api: "",
         models: {},
       }
       try {
@@ -392,20 +482,27 @@ export const KunbotAntPlugin = async ({ client }) => {
           prompts: [
             {
               type: "text",
-              key: "baseURL",
+              key: "requestBaseURL",
               message: "Request Base URL",
-              placeholder: "blank = the catalog's address",
-              validate: (v) => (normalizeBase(v) !== null ? undefined : "An http(s) address, e.g. https://proxy.example"),
+              placeholder: "blank, a URL, or maid=https://…, uni=https://…",
+              validate: (v) =>
+                parseBaseOverrides(v) !== null
+                  ? undefined
+                  : "An http(s) URL, or route=URL pairs separated by commas, e.g. maid=https://proxy.example",
+            },
+            {
+              type: "text",
+              key: "email",
+              message: "Account name",
+              placeholder: "blank = the first account; name a mirror to keep it apart",
+              validate: (v) =>
+                String(v ?? "").trim().length <= 64 ? undefined : "Keep the account name to 64 characters",
             },
           ],
-          async authorize(inputs) {
-            // The key is kept as typed. The balance read happens at usage
-            // time (see `usage`), not here, so signing in never sends the key
-            // anywhere on its own.
-            const base = normalizeBase(inputs?.baseURL)
-            if (base === null) return { type: "failed", error: "That base URL can't be read: " + (inputs?.baseURL || "empty") }
-            return { type: "success", metadata: base ? { baseURL: base } : {} }
-          },
+          // No authorize: magpie then asks its own API key field, and the
+          // answers above are kept as metadata. An authorize here would make
+          // magpie 0.1.4xxx treat the prompts as asking the key (keyAsked)
+          // and skip that field, leaving the sign-in with no key.
         },
       ],
 
@@ -415,14 +512,24 @@ export const KunbotAntPlugin = async ({ client }) => {
       async loader(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
-        const base = normalizeBase(auth.metadata?.baseURL)
+        // Deliberately no `baseURL`: magpie's loader base wins over every
+        // model's `provider.api`, which would collapse the catalog's many
+        // routes onto one address. The per-route overrides are applied per
+        // request here instead, so each route keeps its own base.
+        // New sign-ins keep the prompt answer as typed; older ones kept the
+        // normalized fields. Read either, so upgrading need not sign in
+        // again.
+        const saved = parseBaseOverrides(auth.metadata?.requestBaseURL) ?? {}
+        const base = normalizeBase(auth.metadata?.baseURL) || saved.baseURL || null
+        const bases = normalizeBaseMap(auth.metadata?.baseURLs) || saved.baseURLs || null
         return {
           async fetch(input, init) {
             const headers = new Headers(init?.headers)
             headers.set("authorization", `Bearer ${auth.key}`)
             headers.set("x-api-key", auth.key)
             headers.set("x-kunbot-client", CLIENT)
-            const target = base ? rewriteRequest(input, base) : input
+            const override = baseFor(input, bases, base)
+            const target = override ? rewriteRequest(input, override) : input
             return fetch(target, { ...init, headers })
           },
         }
@@ -494,32 +601,22 @@ export const KunbotAntPlugin = async ({ client }) => {
         }
 
         // The hook returns models in magpie's own shape, not the config
-        // hook's: a model here is spread from the one magpie already
-        // normalised, and its address is set through `api` (id, url, npm)
-        // rather than through `id` and `provider`, which this path ignores.
-        // Writing `id` or `provider` here is silently dropped, which would
-        // send every request to the wrong endpoint.
+        // hook's: `api` carries the per-model address (id, url, npm), and
+        // capabilities/cost are what this path reads. The config hook's
+        // reasoning, tool_call, modalities and cache_read keys are ignored
+        // here. Each model must therefore be converted, not just spread from
+        // the first one.
         const template = Object.values(provider.models ?? {})[0]
         const out = {}
         for (const [key, m] of Object.entries(cat.models)) {
-          out[key] = {
-            ...(template ?? {}),
-            name: m.name,
-            limit: m.limit,
-            reasoning: m.reasoning,
-            tool_call: m.tool_call,
-            modalities: m.modalities,
-            cost: m.cost,
-            variants: m.variants,
-            api: { id: m.id, url: m.provider.api, npm: m.provider.npm },
-          }
+          out[key] = hookModel(template, m)
         }
 
         // Image-generation routes are not in the pi catalog. Their models get
         // the route's address and an image output modality, which is what
         // magpie's /v1/images/generations asks a plugin model for.
         for (const [key, m] of Object.entries(cat.images ?? {})) {
-          out[key] = imageModelForHook(template, m)
+          out[key] = hookModel(template, m)
         }
 
         // Proprietary models join the list only for a key that has Proprietary
@@ -531,16 +628,7 @@ export const KunbotAntPlugin = async ({ client }) => {
           const access = await readAccess(auth.key)
           if (access?.access?.state === "ok") {
             for (const [key, m] of Object.entries(cat.proprietary)) {
-              out[key] = {
-                ...(template ?? {}),
-                name: m.name,
-                limit: m.limit,
-                reasoning: m.reasoning,
-                tool_call: m.tool_call,
-                rate: m.rate,
-                variants: m.variants,
-                api: { id: m.id, url: m.provider.api, npm: m.provider.npm },
-              }
+              out[key] = hookModel(template, m)
             }
           }
         }
@@ -553,4 +641,16 @@ export const KunbotAntPlugin = async ({ client }) => {
 
 // Tests need these; the community convention is to hang them off one object
 // so magpie does not mistake a helper for a plugin.
-export const _internal = { modelsFromCatalog, proprietaryModels, imagesFromOpenweight, imageIdsFromNote, readAccess }
+export const _internal = {
+  modelsFromCatalog,
+  proprietaryModels,
+  imagesFromOpenweight,
+  imageIdsFromNote,
+  readAccess,
+  normalizeBase,
+  normalizeBaseMap,
+  parseBaseOverrides,
+  baseFor,
+  rewriteRequest,
+  hookModel,
+}
