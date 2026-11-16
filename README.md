@@ -2,7 +2,7 @@
 
 kunbot 的 [Magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。在一个 `kunbot` 提供商中管理不同地址的模型，支持主备切换、多账号和请求诊断。
 
-当前插件版本：**0.3.1**。管理页、登录及模型测试已在 **Magpie v0.1.4267** 验证。
+当前插件版本：**0.3.2**。管理页、登录及模型测试已在 **Magpie v0.1.4267** 验证。
 
 ## 功能
 
@@ -12,6 +12,7 @@ kunbot 的 [Magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。在�
 - 多个模型共用一个主机，分别填写模型路径后缀。
 - 复用 Magpie 原生多账号登录；每个账号使用自己的 API Key。
 - 在独立测试页预览、编辑和发送 JSON，查看各候选的请求体、响应及错误。
+- 手动导出、导入完整插件配置，方便备份及跨设备迁移。
 - 可保留 kunbot 公共目录，并通过 `magpie quota` 查询 Pt 余额。
 
 ## 安装与升级
@@ -58,34 +59,34 @@ magpie provider set kunbot routing=rotate
 
 ### 共用主机，按模型填写后缀
 
-以 `MiniMax-H3-Image` 为例：
+下面使用占位模型 `your-image-model-id` 和示例后缀 `image-route` 演示，使用时替换为实际配置：
 
 | 位置 | 填写内容 |
 | --- | --- |
 | 线路 → 完整 Base URL | `https://ant.kunbot.org` |
 | 线路 → 接口协议 | OpenAI Chat |
-| 模型 → 真实模型 ID | `MiniMax-H3-Image` |
+| 模型 → 真实模型 ID | `your-image-model-id` |
 | 模型 → 模型类型 | 图像生成 |
 | 模型 → 主线路 | 选择上面的线路 |
-| 模型 → 模型路径后缀 | `7sref` |
+| 模型 → 模型路径后缀 | `image-route` |
 
 页面预览的 API 前缀为：
 
 ```text
-https://ant.kunbot.org/7sref/v1
+https://ant.kunbot.org/image-route/v1
 ```
 
 实际生图请求为：
 
 ```text
-https://ant.kunbot.org/7sref/v1/images/generations
+https://ant.kunbot.org/image-route/v1/images/generations
 ```
 
 其他模型可复用这条线路，分别填写真实 ID、类型及后缀，例如 `omni`、`salt`。模型选择了备用线路时，同一后缀也会应用于备线。
 
 后缀规则：
 
-- `7sref`、`/7sref/`、`7sref/v1` 均生成 `…/7sref/v1`。
+- `image-route`、`/image-route/`、`image-route/v1` 均生成 `…/image-route/v1`。
 - 线路末尾已有 `/v1` 时，将版本放到后缀之后；其余线路路径保留。
 - 后缀留空时，完整沿用线路地址，不自动添加 `/v1`。
 - 后缀接受字母、数字、`-._~` 和 `/` 分隔；不接受完整网址、查询参数、空路径段或 `.` / `..` 路径段。
@@ -183,7 +184,21 @@ https://ant.kunbot.org/7sref/v1/images/generations
 
 **返回配置** 会打开同一本地服务下的配置页，继续通过 Magpie 读取、保存设置，不依赖浏览器历史或回跳 `wails.localhost`。
 
-[查看模型测试界面](docs/previews/kunbot-model-test.png) · [查看后缀配置界面](docs/previews/kunbot-model-suffix.png)。截图使用临时配置和本地模拟上游。
+## 手动导出与导入
+
+在 **kunbot · 线路与模型 → 配置备份** 中操作，适用于跨设备迁移或 Magpie 同步未覆盖插件 Options 的情况。
+
+**导出：**点击 **导出配置**，再点击 **复制 JSON**。可把文本保存为 UTF-8 的 `.json` 文件，或直接复制到另一台设备。备份包含当前表单中已经通过校验的内容，包括尚未保存的修改；导出本身不会保存配置。自动复制不可用时，可用 **全选 JSON** 后按 Ctrl+C（Mac 为 ⌘C）。
+
+**导入：**点击 **导入配置**，粘贴 JSON 或选择文件，再点击 **预览导入**。检查线路数、手动模型数与公共目录开关后，点击 **替换到编辑区**，检查模型设置，最后点击 **保存配置**。
+
+- 导入是完整替换，包括当前未保存的编辑内容；不自动合并。预览、取消或错误输入不会改变编辑区或已保存配置。
+- 导出保留线路顺序、发现设置、模型后缀、全部主备候选及各自 ID、模型能力和高级字段；已有分组配置在表单保存时会统一整理为线路和模型绑定。
+- 导入仅载入未保存草稿，点击保存才写入 Magpie；可以先导出当前配置再替换。
+- 支持插件生成的版本化备份，以及直接复制的原始 Options JSON。文本与文件上限均为 **1 MiB**，无效地址、线路引用、候选协议或不支持的备份格式会显示错误。
+- 迁移范围是本插件 Options。账号、API Key、旧账号独立地址覆盖、测试结果、Magpie 的模型启用及图像模型选择仍由目标设备自行管理。
+
+Magpie 的插件沙盒限制普通文件下载，因此导出使用可复制文本；文件导入直接在当前页面读取，不上传到模型端点。
 
 ## 高级选项
 
@@ -201,10 +216,10 @@ https://ant.kunbot.org/7sref/v1/images/generations
   },
   "fallback": ["main", "backup", "paid"],
   "models": {
-    "manual/MiniMax-H3-Image": {
-      "id": "MiniMax-H3-Image",
+    "manual/your-image-model-id": {
+      "id": "your-image-model-id",
       "type": "image",
-      "suffix": "7sref",
+      "suffix": "image-route",
       "targets": [{ "endpoint": "main" }, { "endpoint": "backup" }]
     },
     "manual/hidden": {
@@ -266,7 +281,7 @@ https://ant.kunbot.org/7sref/v1/images/generations
 
 | 来源 | 调用 ID 示例 |
 | --- | --- |
-| 管理页新增模型 | `kunbot/manual/MiniMax-H3-Image` |
+| 管理页新增模型 | `kunbot/manual/your-image-model-id` |
 | 自动发现且未沿用旧目录键 | `kunbot/<真实ID>` |
 | 原有公共目录模型 | `kunbot/<route>/<真实ID>` |
 
@@ -305,6 +320,7 @@ TTS / 转写的模型键最后一段需让 Magpie 识别类型，例如 `tts-voi
 | 测试服务无法连接 | 检查 `diagnosticsPort` 是否被其他程序或 Magpie 实例占用 |
 | 返回配置时仍提示 `wails.localhost` 拒绝连接 | 确认实际加载的是 0.3.1 或更新版本，并重启 Magpie |
 | 提供商里的“Add model”没有生成可用端点 | 请在本插件管理页添加模型；提供商模型选择器不会创建插件路由配置 |
+| 换设备后自定义线路或模型没有同步 | 在原设备导出配置，在目标设备导入、预览、替换到编辑区并保存；账号仍通过 Magpie 登录 |
 
 ## 开发与验证
 
@@ -312,7 +328,7 @@ TTS / 转写的模型键最后一段需让 Magpie 识别类型，例如 `tts-voi
 npm test
 ```
 
-当前 36 项自动化测试使用模拟请求与临时账号，不使用真实 Key 或付费模型。另已用 Magpie v0.1.4267 验证配置保存、登录、模型测试和返回流程；Windows 虚拟主机失效场景使用浏览器模拟，未在真实 Windows WebView2 上运行。
+当前 44 项自动化测试使用模拟请求与临时账号，不使用真实 Key 或付费模型，覆盖路由、诊断及配置备份的往返与校验。另已用 Magpie v0.1.4267 验证配置保存、登录、模型测试和返回流程，以及原始页与服务版配置页的导出、文件/粘贴导入、取消、草稿保存、重新载入和窄屏。Windows 虚拟主机失效场景使用浏览器模拟，未在真实 Windows WebView2 上运行。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -320,8 +336,9 @@ npm test
 | `lib/routing.mjs` | 地址解析、账号发现缓存与主备转发 |
 | `lib/diagnostics.mjs` | 协议示例、诊断记录与脱敏 |
 | `lib/diagnostic-service.mjs` | 本地测试服务与配置页资源 |
+| `page/config-transfer.js` | 备份格式、配置校验与导入摘要 |
 | `page/` | 配置页、测试页及消息桥接 |
-| `test/` | 路由和诊断回归测试 |
+| `test/` | 路由、诊断和配置迁移回归测试 |
 
 ## 许可证
 

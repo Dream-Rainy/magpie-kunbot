@@ -9,6 +9,17 @@ const clone = (v) => structuredClone(v)
 const object = (v) => v && typeof v === "object" && !Array.isArray(v)
 const specOf = (v) => typeof v === "string" ? { type: v } : object(v) ? clone(v) : {}
 let original = {}, routeRows = [], modelRows = [], saving = false, dirty = false, loaded = false
+let pendingImport, importGeneration = 0, readingFile = false
+const transfer = window.KunbotConfigTransfer
+const transferStatus = (message, kind = "") => { $("transfer-status").textContent = message; $("transfer-status").className = `hint ${kind}` }
+function resetTransfer() {
+  importGeneration++; readingFile = false; pendingImport = undefined
+  for (const id of ["export-panel", "import-panel", "import-preview"]) $(id).hidden = true
+  for (const id of ["export-text", "import-text", "import-file"]) $(id).value = ""
+  $("preview-import").disabled = false
+  transferStatus("")
+}
+function invalidateImport() { pendingImport = undefined; $("import-preview").hidden = true }
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag)
@@ -67,7 +78,9 @@ function load(options) {
     const base = s.base ?? s.base_url ?? s.url
     // Fixed-base overrides and legacy type-only overrides are preserved as-is
     // unless the user explicitly selects a named route in the form.
-    const id = String(targets[0]?.id ?? s.id ?? (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key))
+    // A candidate's id may differ from the model's default id. Keeping those
+    // separate also preserves backup candidates which inherit the default.
+    const id = String(s.id ?? (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key))
     modelRows.push({ key, id, name: s.name ?? "", type: s.type ?? "", suffix: s.suffix ?? "", endpoint, backup: targets[1]?.endpoint ?? "", raw: s, source, fixed: base, changedRouting: false })
   }
   for (const [key, s] of Object.entries(options.models ?? options.extraModels ?? {})) addModel(key, s, "models")
@@ -80,6 +93,7 @@ function load(options) {
   }
   $("include-catalog").checked = options.includeCatalog ?? !routeRows.some(r => r.discover)
   dirty = false
+  resetTransfer()
   render()
 }
 
@@ -240,6 +254,75 @@ $("add-model").addEventListener("click", () => {
   markDirty(); render(); $("models").lastElementChild.querySelector("input").focus()
 })
 $("include-catalog").addEventListener("change", markDirty)
+$("export-config").addEventListener("click", () => {
+  if (!loaded || saving) return
+  try {
+    const json = transfer.encode(serialize(), "0.3.2")
+    resetTransfer(); $("export-panel").hidden = false; $("export-text").value = json
+    transferStatus("已生成当前表单的备份；导出不会保存配置。", "success")
+  } catch (e) { transferStatus(e.message, "error") }
+})
+$("import-config").addEventListener("click", () => {
+  if (!loaded || saving) return
+  resetTransfer(); $("import-panel").hidden = false; $("import-text").focus()
+  transferStatus("粘贴或选择 JSON 文件，再点击预览导入。")
+})
+$("close-export").addEventListener("click", resetTransfer)
+$("cancel-import").addEventListener("click", resetTransfer)
+$("select-export").addEventListener("click", () => {
+  $("export-text").focus(); $("export-text").select()
+  transferStatus("已全选，请按 Ctrl+C（Mac 为 ⌘C）复制。")
+})
+$("copy-export").addEventListener("click", async () => {
+  const json = $("export-text").value
+  try {
+    if (!navigator.clipboard?.writeText) throw Error()
+    await navigator.clipboard.writeText(json)
+    transferStatus("已复制配置 JSON。", "success")
+  } catch {
+    $("export-text").focus(); $("export-text").select()
+    let copied = false
+    try { copied = document.execCommand("copy") } catch {}
+    transferStatus(copied ? "已复制配置 JSON。" : "已选中 JSON，请按 Ctrl+C（Mac 为 ⌘C）复制。", copied ? "success" : "")
+  }
+})
+$("import-text").addEventListener("input", () => {
+  importGeneration++; readingFile = false; $("preview-import").disabled = false
+  invalidateImport(); transferStatus("内容已修改，请重新预览。")
+})
+$("import-file").addEventListener("change", async () => {
+  const file = $("import-file").files[0]
+  $("import-file").value = ""
+  if (!file || saving || !loaded) return
+  const generation = ++importGeneration
+  invalidateImport(); readingFile = true; $("preview-import").disabled = true
+  transferStatus("正在读取文件…")
+  try {
+    if (file.size > transfer.LIMIT) throw new Error("配置文件不能超过 1 MiB。")
+    const json = await file.text()
+    if (generation !== importGeneration || saving) return
+    $("import-text").value = json
+    transferStatus("文件已读取，请点击预览导入。")
+  } catch (e) { if (generation === importGeneration) transferStatus(e.message || "文件读取失败。", "error") }
+  finally { if (generation === importGeneration) { readingFile = false; $("preview-import").disabled = false } }
+})
+$("preview-import").addEventListener("click", () => {
+  if (!loaded || saving || readingFile) return
+  invalidateImport()
+  try {
+    const result = transfer.decode($("import-text").value)
+    pendingImport = result.options
+    $("import-summary").textContent = `${result.summary.routes} 条线路 · ${result.summary.models} 个手动模型 · 公共目录${result.summary.includeCatalog ? "开启" : "关闭"}`
+    $("import-preview").hidden = false
+    transferStatus("校验通过，尚未修改编辑区或已保存配置。", "success")
+  } catch (e) { transferStatus(e.message, "error") }
+})
+$("apply-import").addEventListener("click", () => {
+  if (!loaded || saving || readingFile || !pendingImport) return
+  load(pendingImport); markDirty()
+  status("已载入导入草稿，检查后点击保存配置。")
+  transferStatus("已替换编辑区，尚未保存。", "success")
+})
 $("open-tests").addEventListener("click", () => {
   if (!loaded || saving) return
   if (dirty) { status("请先保存配置，再打开模型测试。", "error"); return }
@@ -250,7 +333,7 @@ $("save").addEventListener("click", async () => {
   let controls = []
   try {
     const options = serialize()
-    controls = [...$("editor").querySelectorAll("input, select, button")].map(node => [node, node.disabled])
+    controls = [...$("editor").querySelectorAll("input, select, textarea, button")].map(node => [node, node.disabled])
     for (const [node] of controls) node.disabled = true
     saving = true; $("save").disabled = true
     status("正在保存…")
@@ -259,7 +342,10 @@ $("save").addEventListener("click", async () => {
     $("save-state").textContent = "配置已保存"
     status("请到 kunbot 的模型列表查看结果；目录同步可能需要几秒。", "success")
   } catch (e) { status(e?.message ?? "保存失败，请重试。", "error") }
-  finally { for (const [node, disabled] of controls) if (node.isConnected) node.disabled = disabled; saving = false; $("save").disabled = false }
+  finally {
+    for (const [node, disabled] of controls) if (node.isConnected) node.disabled = disabled
+    saving = false; $("save").disabled = false; $("preview-import").disabled = readingFile
+  }
 })
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = "" } })
 try {

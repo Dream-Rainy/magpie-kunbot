@@ -1,6 +1,6 @@
 {
   "name": "magpie-kunbot",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "kunbot provider with model management, request diagnostics, per-model endpoints, primary/backup failover and Pt balance.",
   "type": "module",
   "main": "./index.mjs",

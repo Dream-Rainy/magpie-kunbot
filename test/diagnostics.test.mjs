@@ -183,7 +183,7 @@ test("the service provides a complete config page without loading Wails resource
   assert.equal(response.headers.get("access-control-allow-origin"), null)
   const html = await response.text()
   const assets = [...html.matchAll(/(?:src|href)="([^"]+\.(?:css|js))"/g)].map(m => m[1])
-  assert.deepEqual(assets.sort(), ["_magpie/bridge.js", "app.js", "style.css"])
+  assert.deepEqual(assets.sort(), ["_magpie/bridge.js", "app.js", "config-transfer.js", "style.css"])
   for (const asset of assets) assert.equal((await fetch(new URL(asset, base + "/config/index.html"))).status, 200)
   assert.equal((await fetch(base + "/config/")).status, 200)
   const bridge = await (await fetch(base + "/config/_magpie/bridge.js")).text()

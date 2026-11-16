@@ -6,12 +6,13 @@
     <title>kunbot · 线路与模型</title>
     <link rel="stylesheet" href="style.css">
     <script src="_magpie/bridge.js"></script>
+    <script src="config-transfer.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
     <main>
       <header class="hero">
-        <div class="brand"><span class="mark" aria-hidden="true">k</span><span>kunbot<span class="version">0.3.1</span></span></div>
+        <div class="brand"><span class="mark" aria-hidden="true">k</span><span>kunbot<span class="version">0.3.2</span></span></div>
         <h1>线路与模型</h1>
         <p class="intro">把不同地址的模型放在一起。主线优先，失败时自动尝试备线。</p>
         <div class="stats"><span id="route-count">0 条线路</span><span id="model-count">0 个手动模型</span><span>使用现有账号的 API Key</span></div>
@@ -32,6 +33,22 @@
           <div id="models" class="cards"></div>
           <div id="model-empty" class="empty"><strong>公开模型无需逐个添加</strong><p>在线路上打开“自动发现模型”即可。这里用于补充目录中没有的模型。</p></div>
           <p id="preserved" class="hint" hidden></p>
+        </section>
+
+        <section aria-labelledby="backup-title">
+          <div class="section-heading"><div><h2 id="backup-title">配置备份</h2><p>迁移线路、模型和高级设置。账号与 API Key 仍由 Magpie 管理。</p></div><div class="backup-actions"><button id="export-config" type="button">导出配置</button><button id="import-config" type="button">导入配置</button></div></div>
+          <div id="export-panel" class="transfer-panel" hidden>
+            <label class="field"><span>配置 JSON（包含当前未保存的修改）</span><textarea id="export-text" rows="10" readonly spellcheck="false"></textarea></label>
+            <div class="backup-actions"><button id="copy-export" type="button">复制 JSON</button><button id="select-export" type="button">全选 JSON</button><button id="close-export" type="button">收起</button></div>
+            <p class="hint">复制后可保存为 .json 文件，在另一台设备导入。</p>
+          </div>
+          <div id="import-panel" class="transfer-panel" hidden>
+            <label class="field"><span>选择 JSON 文件（可选，上限 1 MiB）</span><input id="import-file" type="file" accept=".json,application/json"></label>
+            <label class="field"><span>或粘贴配置 JSON</span><textarea id="import-text" rows="10" spellcheck="false" placeholder="粘贴导出的备份，或原始插件 Options JSON"></textarea></label>
+            <div class="backup-actions"><button id="preview-import" type="button">预览导入</button><button id="cancel-import" type="button">取消导入</button></div>
+            <div id="import-preview" class="import-preview" hidden><p id="import-summary"></p><p class="hint">将完整替换当前编辑区，包括尚未保存的修改；点击“保存配置”后才生效。</p><button id="apply-import" class="primary" type="button">替换到编辑区</button></div>
+          </div>
+          <p id="transfer-status" class="hint" role="status" aria-live="polite"></p>
         </section>
 
         <aside class="note"><strong>账号和 Key 仍在 Magpie 中管理</strong><p>保存后，插件使用当前账号同步模型。生图模型请再到 Magpie 的图像模型设置中选择。这里不会读取或保存你的 Key。</p></aside>
