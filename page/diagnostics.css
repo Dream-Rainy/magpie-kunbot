@@ -1,0 +1,26 @@
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --bg: #f7f8f9; --fg: #202a30; --muted: #68717a; --line: #dce0e4; --card: #fff; --accent: #14786a; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.6; }
+main { max-width: 1080px; margin: auto; padding: 32px; }
+header, .heading, .buttons { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+header { margin-bottom: 26px; }
+.brand { font-size: 16px; font-weight: 650; } small { margin-left: 7px; color: var(--muted); font-size: 11px; font-weight: 450; }
+h1 { font-size: 28px; margin: 10px 0 4px; } h2 { font-size: 18px; margin: 0; }
+p { margin: 0; } header p, .hint { color: var(--muted); }
+section { padding: 22px; margin-bottom: 18px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.heading { align-items: center; margin-bottom: 16px; } .heading p { margin-top: 5px; }
+.fields { display: grid; grid-template-columns: 1fr 1.5fr; gap: 15px; margin-bottom: 15px; }
+label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
+button, select, textarea { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+button { padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+button:hover { filter: brightness(.97); } button:disabled { cursor: default; opacity: .5; }
+button.primary { color: white; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+select { padding: 8px; width: 100%; min-height: 38px; font-size: 13px; }
+textarea { width: 100%; display: block; resize: vertical; padding: 12px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; line-height: 1.6; tab-size: 2; }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.body-heading { margin-top: 20px; margin-bottom: 8px; } .body-heading button { padding: 3px 9px; font-size: 12px; }
+.hint { font-size: 12px; margin-top: 8px; } .buttons { justify-content: flex-start; flex-wrap: wrap; margin: 18px 0 10px; }
+#status { min-height: 23px; margin-top: 12px; font-size: 13px; } .error { color: #c54e40; } .success { color: var(--accent); }
+#summary { margin-bottom: 10px; font-size: 13px; font-weight: 550; } #output { min-height: 360px; }
+@media (prefers-color-scheme: dark) { :root { --bg: #171a1e; --fg: #e3e6e9; --muted: #a1a9b2; --line: #363d45; --card: #1e2328; --accent: #57b7a6; } button.primary { color: #11211e; } }
+@media (max-width: 680px) { main { padding: 18px 12px; } section { padding: 16px; } .fields { grid-template-columns: 1fr; } .heading, header { flex-wrap: wrap; } h1 { font-size: 25px; } }

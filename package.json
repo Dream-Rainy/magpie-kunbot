@@ -1,11 +1,24 @@
 {
   "name": "magpie-kunbot",
-  "version": "0.1.7",
-  "description": "Provider plugin for kunbot: reads the site's own published model catalog, serves every open-weight route and proprietary model from the one gateway, and reports Pt balance as quota.",
+  "version": "0.3.1",
+  "description": "kunbot provider with model management, request diagnostics, per-model endpoints, primary/backup failover and Pt balance.",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["index.mjs", "README.md"],
-  "keywords": ["magpie", "kunbot", "provider", "quota"],
+  "files": [
+    "index.mjs",
+    "lib",
+    "page",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "magpie",
+    "kunbot",
+    "provider",
+    "quota"
+  ],
   "license": "MIT",
   "author": "",
   "repository": {
@@ -14,6 +27,17 @@
   },
   "magpie": {
     "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23000' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E",
-    "maxConcurrency": 8
+    "maxConcurrency": 8,
+    "page": {
+      "title": "kunbot · Routes & models",
+      "titles": { "zh": "kunbot · 线路与模型", "zh-TW": "kunbot · 線路與模型" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": { "port": 37747, "option": "diagnosticsPort" }
+    },
+    "options": {
+      "models": {},
+      "_help": "Open the kunbot Routes & models page to configure endpoints and models using forms. Advanced options remain supported; see README."
+    }
   }
 }

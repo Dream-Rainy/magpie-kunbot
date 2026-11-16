@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="kunbot-diagnostics-token" content="__KUNBOT_DIAGNOSTIC_TOKEN__">
+  <title>kunbot · 模型测试</title>
+  <link rel="stylesheet" href="diagnostics.css">
+  <script src="diagnostics.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><div><span class="brand">kunbot <small>0.3.1</small></span><h1>模型测试</h1><p>查看模型实际发送的请求，以及主备线路各自的响应。</p></div><button id="back" type="button">返回配置</button></header>
+    <section aria-labelledby="request-title">
+      <div class="heading"><h2 id="request-title">测试请求</h2><button id="reload" type="button">重新加载账号与模型</button></div>
+      <div class="fields">
+        <label>账号<select id="account" aria-label="测试账号"></select></label>
+        <label>模型<select id="model" aria-label="测试模型"></select></label>
+      </div>
+      <div class="fields">
+        <label>操作接口<select id="operation" aria-label="操作接口"><option value="/chat/completions">Chat · /chat/completions</option><option value="/messages">Anthropic · /messages</option><option value="/responses">Responses · /responses</option><option value="/images/generations">生图 · /images/generations</option><option value="/audio/speech">语音合成 · /audio/speech</option></select></label>
+        <label>超时<select id="timeout" aria-label="测试超时"><option value="15000">15 秒</option><option value="30000">30 秒</option><option value="60000" selected>60 秒</option><option value="120000">120 秒</option></select></label>
+      </div>
+      <div class="heading body-heading"><label for="body">JSON 请求体</label><button id="reset-body" type="button">恢复示例请求</button></div>
+      <textarea id="body" rows="12" spellcheck="false" aria-label="JSON 请求体"></textarea>
+      <p class="hint">model 会替换为所选模型的真实 ID。预览列出所有候选；发送时按正常规则切换主备。当前面板支持 JSON 请求。</p>
+      <div class="buttons"><button id="preview" type="button">预览请求</button><button id="send" class="primary" type="button">发送测试（可能计费）</button><button id="cancel" type="button" disabled>取消测试</button></div>
+      <p class="hint">仅点击发送才调用模型。测试直接访问插件上游，用于诊断地址、协议与请求体；不经过 Magpie 的 agent 协议转换。</p>
+      <p id="status" role="status" aria-live="polite">正在读取已登录账号…</p>
+    </section>
+    <section aria-labelledby="result-title">
+      <div class="heading"><div><h2 id="result-title">诊断结果</h2><p class="hint">包含最终地址、脱敏请求头、请求体、HTTP 状态、耗时与响应。结果只在本页保留。</p></div><button id="copy" type="button" disabled>复制诊断</button></div>
+      <p id="summary">尚未运行测试。</p>
+      <textarea id="output" rows="22" readonly spellcheck="false" aria-label="诊断输出" placeholder="先预览请求，确认地址和请求体后再发送测试。"></textarea>
+      <p class="hint">Key、认证头与 Cookie 会隐藏；图片 base64 和二进制用摘要表示，响应最多读取 64 KiB。</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,160 +1,327 @@
 # magpie-kunbot
 
-kunbot 的 [magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。
+kunbot 的 [Magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。在一个 `kunbot` 提供商中管理不同地址的模型，支持主备切换、多账号和请求诊断。
 
-使用 API Key 登录，直接读取站点发布的模型目录而非硬编码模型列表，模型选择器会自动显示站点当前提供的模型。当 Key 具备专有模型访问权限（Proprietary Access）时会追加专有模型，并将 Pt 余额作为额度上报。
+当前插件版本：**0.3.1**。管理页、登录及模型测试已在 **Magpie v0.1.4267** 验证。
 
-状态站固定为 `ant.kunbot.org`；登录时可以填 `Request Base URL`，它只重写实际的模型请求，不影响目录、模型列表和余额查询。它可以有三种写法：
+## 功能
 
-| 写法 | 说明 |
-| --- | --- |
-| 留空 | 每个模型使用目录给它的地址。一条 Key 的多条线路各有各的 Base URL 时用这种（推荐） |
-| 一个 URL | 所有模型请求都改发到这个地址，路径保持不变 |
-| `线路=URL` 列表 | 只重写列出的线路，其余仍用目录地址。线路名是模型键的第一段（`hikari`、`maid` 等），`proprietary` 是专有模型网关，`*` 是所有未单列线路的默认值 |
+- 使用表单管理线路和模型，无需日常手写 Options JSON。
+- 合并多条线路暴露的模型；同名且协议一致时优先主线，失败后尝试备线。
+- 为专有、隐藏、脱敏生图等目录外模型指定真实 ID、类型和独立地址。
+- 多个模型共用一个主机，分别填写模型路径后缀。
+- 复用 Magpie 原生多账号登录；每个账号使用自己的 API Key。
+- 在独立测试页预览、编辑和发送 JSON，查看各候选的请求体、响应及错误。
+- 可保留 kunbot 公共目录，并通过 `magpie quota` 查询 Pt 余额。
 
-| 地址 | 说明 |
-| --- | --- |
-| `ant.kunbot.org` | 固定状态站：提供模型目录、公告与余额鉴权会话 |
-| 目录返回值 | 模型网关：每条线路自己的 Base URL，聊天、图像与私有模型请求都发往对应模型自己的地址 |
-| Request Base URL | 可选覆盖：单个 URL 覆盖全部线路，`线路=URL` 只覆盖指定线路，均保留原路径 |
+## 安装与升级
 
-## 功能特性
+### 本地目录或压缩包
 
-- **动态读取站点模型目录**：从 `/configs/pi/models.json` 获取所有开源权重模型配置，包括线路 Base URL、协议、上下文大小、输出上限、费用及推理开关。无需硬编码，站点新增线路或调整限制会自动同步。
-- **按路线适配推理档位**：根据目录中的 `thinkingLevelMap` 精确提供该线路支持的推理强度（如 `low`、`high`、`max`），避免发送不支持的档位。
-- **自动发现图像线路**：读取 `/api/openweight`，把 `label` 为 `Image Generation` 的路由按备注中的 `Supported Model:` 加入图像模型，并声明为只输出图片；magpie 0.1.3423+ 会把它列入图像模型并通过插件的 `fetch` 请求该线路的 `/v1/images/generations`。
-- **支持专有模型**：当专有模型开放且 Key 拥有权限时自动加入模型列表；停运时自动回退为纯开源线路。
-- **额度展示**：在 `magpie quota` 中显示当前 Key 的 Pt 余额；若 Key 未登记或未开通专有权限会给出明确提示。
-
-插件不会根据站点当前的健康检查状态隐藏任何模型：线路是否可用交由站点自身决定，插件不代为过滤。
-
-图像线路依赖站点继续使用 `Image Generation` 标签和 `Supported Model:` 备注；站点改名或改格式时该线路会暂时不被识别。
-如果备注里的模型名被脱敏（例如 `???????-??-Image`），插件无法还原真实 ID，该线路不会生成可用模型。
-
-## 接口与路由
-
-在 magpie 中聚合为一个 `kunbot` 提供商，底层按模型分发到不同端点：
-
-| 模型类型 | 请求地址 | 协议 |
-| --- | --- | --- |
-| 开源权重模型 | 目录提供的 `<base>/<route>/v1` | OpenAI Chat Completions |
-| 图像生成模型 | 路由提供的 `<base>/<route>/v1/images/generations` | OpenAI Images API |
-| 专有模型 | 专有模型接口提供的 `base_url` | Anthropic Messages |
-
-聊天与图像模型地址由站点目录和路由列表提供，专有模型地址由专有模型接口提供。
-
-## 一个 Key，多个 Base URL
-
-magpie 选择请求地址的顺序是：
-
-1. `auth.loader` 返回的 `baseURL`；
-2. 模型自己的 `provider.api`（`config` 钩子）或 `api.url`（`provider.models` 钩子）；
-3. 提供商的 `api`；
-4. AI SDK 包自己的默认地址。
-
-所以一个 Key 要对应多个 Base URL，正确做法是让**每个模型带自己的地址**，而不是给账号设一个全局 `baseURL`：
-
-- `config` 钩子把目录里每条线路的 `baseUrl` 写到该线路模型的 `provider: { npm, api }`；
-- `provider.models` 钩子把它写成模型级 `api: { id, url, npm }`；
-- `auth.loader` 故意不返回 `baseURL`，否则 magpie 会让它覆盖所有模型地址。
-
-目录本身已经是多地址的（`.../hikari/v1`、`.../maid/v1`……），因此一个 Key 只登录一次就能用全部线路；登录时 `Request Base URL` 留空即可。
-
-只有要把部分线路改到代理或镜像时才需要填 `Request Base URL`：单个 URL 覆盖全部线路，`线路=URL` 只覆盖指定线路，`*` 作为未单列线路的默认值。覆盖在 loader 的 `fetch` 里按请求路径的第一段选择，仍然使用同一个 Key，例如：
-
-```text
-maid=https://proxy.example/maid, uni=https://proxy.example/uni
-```
-
-也可以只写一个地址：
-
-```text
-https://proxy.example
-```
-
-### 同一服务的镜像分流
-
-如果两个地址是同一套服务的镜像（不是目录里的不同线路），用两个账号：
-
-1. 第一次登录：`Request Base URL` 填主站（或留空用目录地址），`Account name` 填 `primary`，`API Key` 填同一个。
-2. 第二次登录：`Request Base URL` 填镜像，`Account name` 填 `mirror`，`API Key` 仍填同一个。
-3. 让 magpie 在账号间分流：
+压缩包先解压，再添加包含 `package.json` 的目录。Magpie v0.1.4267 不能直接把 `.tgz` 当作本地插件入口。
 
 ```sh
-magpie provider set kunbot routing=rotate
+magpie plugin add /绝对路径/magpie-kunbot
 ```
 
-要按权重就改成 `routing=weight`，要先耗尽主站再切镜像就用 `routing=drain`。模型 ID 仍然只有一套 `kunbot/<route>/<model>`，两个账号会分别显示额度（同一个 Key 的余额会读两次）。
+若同时安装了 GitHub 版和本地版，请在插件页面选择由当前版本提供 `kunbot`，或运行：
 
-注意 `Request Base URL` 是前缀，会保留目录里的路径：目录线路本身是 `https://anthropic.kunbot.art/<route>/v1`，所以镜像应填 `https://mirror.example`，不要填 `https://mirror.example/v1`，否则会变成 `/v1/<route>/v1/...`。如果镜像只提供裸 `/v1/chat/completions`、没有 `/<route>/v1` 路径，它不能直接复用这个目录，需要单独建模型或提供商，再用 routing group 分流。
+```sh
+magpie plugin use /绝对路径/magpie-kunbot kunbot
+```
 
-## 安装
+升级本地版本时，将新文件覆盖到**原插件目录**，保持安装路径不变，再重启 Magpie。账号和插件选项由 Magpie 保存，无需重新填写。仅修改源码不会自动触发宿主重载。
 
-图像模型需要 magpie `0.1.3423` 或更新版本；更早的版本只按模型名判断图像模型。
-
-通过 GitHub 安装：
+### GitHub
 
 ```sh
 magpie plugin add github:wsyzxjn/magpie-kunbot
 ```
 
-或从本地克隆安装：
+请确认实际安装版本包含本文所述的管理页与测试功能。
+
+## 登录与开始使用
+
+1. 在 Magpie 插件页面找到 `kunbot`，点击登录；也可运行 `magpie plugin login kunbot`。
+2. 填写 **Account name** 和 **API Key**。名称可选；多个账号建议使用不同名称，例如 `personal`、`work`。登录不再询问地址。
+3. 打开侧边栏的 **kunbot · 线路与模型**。
+4. 添加线路或手动模型，点击 **保存配置**。
+5. 到 `kunbot` 提供商中选择模型。生图模型还需在 Magpie 的图像模型设置中选用。
+
+正常请求使用 Magpie 选中的账号；线路与模型配置供这些账号共用。账号调度继续由 Magpie 管理，例如：
 
 ```sh
-magpie plugin add ./kunbot-magpie-plugin
+magpie provider set kunbot routing=rotate
 ```
 
-登录凭据：
+## 配置线路与模型
 
-```sh
-magpie plugin login kunbot
-```
+### 共用主机，按模型填写后缀
 
-先输入 `Request Base URL`（留空使用目录里每条线路自己的地址；也可填 `线路=URL` 只覆盖部分线路。它只影响模型请求），再输入 `Account name`（留空表示第一个账号；镜像分流时给第二个账号起不同名字），最后输入 API Key。
+以 `MiniMax-H3-Image` 为例：
 
-在客户端应用中：打开「插件」，添加该插件，然后在 `kunbot` 提供商行点击登录，按提示填写 Request Base URL、Account name 和 API Key。
-
-## 模型名称规则
-
-开源权重模型采用 `<route>/<model_id>` 格式命名，其中 `route` 为接口路径中的分流标识：
-
-```
-kunbot/maid/deepseek-ai/DeepSeek-V4.1-Flash
-kunbot/otohime/audnai/Warlock-GLM-5.3-FP8
-kunbot/uni/zai-org/GLM-5.3
-```
-
-图像模型同样带路由段：
-
-```
-kunbot/7sref/MiniMax-H3-Image
-```
-
-它由 magpie 的
-`/v1/images/generations` 调用。
-
-路由段包含在模型键名中，以避免不同线路提供相同模型 ID 时发生冲突。
-
-专有模型开放时直接使用其自身 ID（无路由段）：
-
-```
-kunbot/claude-opus-5
-kunbot/gpt-5.6
-```
-
-## 数据流与凭据安全性
-
-API Key 存放在 magpie 的 `plugin-auth.json`（权限模式 600）中。
-
-- **模型请求**：带 `Authorization: Bearer <key>` 请求头发送至目录提供的模型网关地址；如果登录时填了 Request Base URL，则按线路（或全部线路）替换请求主机，路径保持不变。
-- **余额读取机制**：模型网关未鉴权读取返回 403，查询余额采用与网页端一致的流程：通过 `POST /api/proprietary/key` 向固定状态站 `ant.kunbot.org` 提交 Key 获取 Session Cookie，再读取 `/api/proprietary/access`。因此运行 `magpie quota` 时 Key 会发往状态站，查询结果在本地缓存 30 分钟。专有模型开放时，构建模型列表也要用同一鉴权决定是否列出专有模型，所以模型列表刷新同样会发送 Key（当前站点未开放专有模型，此路径不触发）。开源线路的模型请求本身不经过状态站。
-
-## 目录结构
-
-| 文件 | 说明 |
+| 位置 | 填写内容 |
 | --- | --- |
-| `index.mjs` | 插件核心实现：提供商配置、登录、请求鉴权、目录解析与额度钩子 |
-| `package.json` | 包清单与 magpie 并发配置 |
+| 线路 → 完整 Base URL | `https://ant.kunbot.org` |
+| 线路 → 接口协议 | OpenAI Chat |
+| 模型 → 真实模型 ID | `MiniMax-H3-Image` |
+| 模型 → 模型类型 | 图像生成 |
+| 模型 → 主线路 | 选择上面的线路 |
+| 模型 → 模型路径后缀 | `7sref` |
+
+页面预览的 API 前缀为：
+
+```text
+https://ant.kunbot.org/7sref/v1
+```
+
+实际生图请求为：
+
+```text
+https://ant.kunbot.org/7sref/v1/images/generations
+```
+
+其他模型可复用这条线路，分别填写真实 ID、类型及后缀，例如 `omni`、`salt`。模型选择了备用线路时，同一后缀也会应用于备线。
+
+后缀规则：
+
+- `7sref`、`/7sref/`、`7sref/v1` 均生成 `…/7sref/v1`。
+- 线路末尾已有 `/v1` 时，将版本放到后缀之后；其余线路路径保留。
+- 后缀留空时，完整沿用线路地址，不自动添加 `/v1`。
+- 后缀接受字母、数字、`-._~` 和 `/` 分隔；不接受完整网址、查询参数、空路径段或 `.` / `..` 路径段。
+
+### 使用完整独立地址
+
+不同主机或不同协议可分别建立线路，例如：
+
+| 线路示例 | 完整 API Base URL |
+| --- | --- |
+| 专有 | `https://anthropic.kunbot.art/v1` |
+| omni | `https://anthropic.kunbot.org/omni/v1` |
+
+模型选择对应线路，后缀留空即可。线路协议可选 OpenAI Chat、Anthropic Messages 或 OpenAI Responses，按上游实际接口选择；域名中的 `anthropic` 或模型名称不能代替协议设置。
+
+图片生成沿用 OpenAI Images 接口；普通聊天的协议选择不会把生图请求变成聊天请求。
+
+### 自动发现与公共目录
+
+对支持模型列表接口的主备线路，开启 **自动发现模型**。插件用当前账号 Key 请求：
+
+```text
+<线路 Base URL>/models
+```
+
+接受标准列表：
+
+```json
+{ "data": [{ "id": "model-a" }, { "id": "model-b" }] }
+```
+
+需要独立目录地址时，展开 **目录地址与线路标识**，填写模型目录地址。发现仍按线路查询，不会逐个拼接模型后缀；共用裸主机只用于手动模型时，可关闭发现。
+
+**同时保留 kunbot 状态站发布的模型** 控制是否加入原有公共目录。插件读取：
+
+| 接口 | 用途 |
+| --- | --- |
+| `/configs/pi/models.json` | 模型地址、协议、上下文、费用及推理档位 |
+| `/api/openweight` | 从 `Image Generation` 标签和 `Supported Model:` 备注识别生图模型 |
+| `/api/proprietary` | 仅当其中确实包含模型列表时，用于自动追加专有模型 |
+
+目录里被问号脱敏的名称无法还原真实 ID，请手动补充。手动模型不依赖公开专有列表或余额查询成功；实际权限由上游校验。插件不按状态站健康检查结果隐藏模型。
+
+每条发现线路单独超时并缓存，刷新失败保留该宿主进程内上次成功的目录。缓存按账号 Key 和完整地址隔离。
+
+### 模型类型
+
+| 类型 | 默认输入 | 默认输出 |
+| --- | --- | --- |
+| `text`：文字对话 | text | text |
+| `vision`：文字 + 看图 | text, image | text |
+| `image`：图像生成 | text | image |
+| `audio`：语音合成 | text | audio |
+| `transcription`：语音转写 | audio | text |
+| `video`：视频生成 | text | video |
+
+这些类型声明模型能力，是否支持对应操作仍取决于上游。图生图模型可通过高级选项补充 `"input": ["text", "image"]`。
+
+## 主备切换
+
+自动发现的模型按真实 ID 取并集。同名且协议一致的模型只显示一次，按线路排列顺序尝试；主线独有、备线独有的模型只发给确实提供它的线路。不同协议的同名项不会被直接组成透明主备。
+
+手动模型按自己选择的主线路、备用线路尝试。两条线路可使用不同的完整路径；高级配置还能为备线指定不同的真实模型 ID。
+
+| 情况 | 插件行为 |
+| --- | --- |
+| 主线成功 | 直接返回，不请求备线 |
+| 网络失败、HTTP 408、429、5xx | 尝试下一条兼容候选，每条最多一次 |
+| HTTP 400、401、403、404 等其他错误 | 直接返回，便于定位请求或权限问题 |
+| 用户取消 | 停止请求，不切换 |
+| 已交付给客户端的流式响应中断 | 报告错误，不拼接另一条流 |
+
+主备线路需使用同一协议。不同协议的请求体结构不同，不能只替换地址来切换。
+
+## 模型测试与诊断
+
+在配置页保存后，点击 **模型测试 · 查看请求与响应**：
+
+1. 选择已登录账号与模型，无需重新输入 Key。
+2. 页面生成对应协议的 JSON 示例，可修改请求体、操作接口与超时。
+3. 点击 **预览请求**，查看各候选的最终地址、脱敏请求头及真实请求体。此步骤不发送模型推理请求；载入模型仍可能查询目录。
+4. 点击 **发送测试（可能计费）**，查看实际尝试的线路、HTTP 状态、耗时、响应或异常。
+5. 可取消测试或复制诊断；账号登录状态变化后，点击 **重新加载账号与模型**。
+
+请求体中的 `model` 会替换为所选模型的真实 ID；备线 ID 不同时，诊断也会显示替换后的值。认证头、Cookie、凭据字段及上游回显的当前 Key 会隐藏。
+
+支持范围：
+
+- 支持 Chat、Anthropic Messages、Responses、生图和语音合成的 JSON 请求。
+- 暂不提供文件上传、图片编辑或语音转写测试。
+- 直接请求插件上游，复用模型地址、后缀、账号覆盖及主备逻辑；不经过 Magpie 的 agent 协议转换或账号调度，网络使用宿主的默认代理。
+- 默认关闭流式输出，可手动修改 JSON 验证流式响应。
+- 超时可选 15–120 秒；请求体和响应读取上限均为 64 KiB。图片 base64 和二进制用摘要表示。
+- 结果包含填写的测试内容和脱敏响应，仅在本页保留，不写入插件配置或诊断日志。
+
+**返回配置** 会打开同一本地服务下的配置页，继续通过 Magpie 读取、保存设置，不依赖浏览器历史或回跳 `wails.localhost`。
+
+[查看模型测试界面](docs/previews/kunbot-model-test.png) · [查看后缀配置界面](docs/previews/kunbot-model-suffix.png)。截图使用临时配置和本地模拟上游。
+
+## 高级选项
+
+日常使用管理页即可。以下字段可在 Magpie 插件 **Options** 中编辑；其中不能放 API Key。
+
+下面示例关闭公共目录，使用共用主机、备线和一个独立专有端点：
+
+```json
+{
+  "includeCatalog": false,
+  "routes": {
+    "main": { "base": "https://ant.kunbot.org", "protocol": "chat" },
+    "backup": { "base": "https://backup.example", "protocol": "chat" },
+    "paid": { "base": "https://anthropic.kunbot.art/v1", "protocol": "anthropic" }
+  },
+  "fallback": ["main", "backup", "paid"],
+  "models": {
+    "manual/MiniMax-H3-Image": {
+      "id": "MiniMax-H3-Image",
+      "type": "image",
+      "suffix": "7sref",
+      "targets": [{ "endpoint": "main" }, { "endpoint": "backup" }]
+    },
+    "manual/hidden": {
+      "id": "your-hidden-model-id",
+      "type": "text",
+      "endpoint": "main",
+      "suffix": "omni"
+    },
+    "manual/private": {
+      "id": "your-private-model-id",
+      "type": "text",
+      "endpoint": "paid"
+    }
+  }
+}
+```
+
+`backup.example` 和 `your-…-model-id` 是占位值，使用时替换为实际地址及真实 ID。
+
+### 线路与顶层字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `routes.<name>.base` | 主机或完整 API 前缀；也接受 `base_url`、`url` |
+| `routes.<name>.protocol` | `chat`、`anthropic`、`responses`；默认 `chat` |
+| `routes.<name>.discover` | 是否用当前账号读取 `<base>/models` |
+| `routes.<name>.models_url` | 独立的完整目录 URL |
+| `routes.<name>.models` | 分组简写，支持 ID 数组或 ID 到模型设置的映射 |
+| `endpoints` | 与 `routes` 相同的高级形式，同名时 `routes` 优先 |
+| `fallback` | 自动发现线路的优先顺序；管理页按上下排序保存 |
+| `includeCatalog` | 是否加入状态站公共目录；未指定时，有自动发现线路则关闭，否则保留 |
+| `discoveryTimeoutMs` | 发现超时，默认 8000 ms，范围 100–30000 ms |
+| `diagnosticsPort` | 本地测试服务端口，默认 `37747`；多个 Magpie 实例应使用不同端口 |
+
+### 模型字段
+
+`models` 的键是插件内的模型键，值可以是类型字符串，也可以是对象：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 上游真实模型 ID；未填时沿用已有模型或从模型键推导 |
+| `name` | 显示名称 |
+| `type` | `text`、`vision`、`image`、`audio`、`transcription`、`video` |
+| `endpoint` | 引用命名线路 |
+| `base` / `base_url` / `url` | 单个模型的固定 API 前缀，可替代命名线路 |
+| `suffix` | 可选模型路径后缀，留空保留完整地址 |
+| `targets` | 有序主备候选数组；候选可设置 `endpoint`、`base`、`id`、`suffix` |
+| `protocol` / `npm` | 协议或 AI SDK 包；候选之间必须兼容 |
+| `input` / `output` | 自定义模态数组 |
+| `context` / `output_limit` | 上下文长度和输出上限 |
+| `reasoning` / `tool_call` | 推理及工具调用能力 |
+| `cost` / `variants` / `rate` | 费用、推理档位和倍率 |
+
+`targets[].suffix` 优先于模型的 `suffix`，空字符串表示该候选沿用完整地址。已有目录模型可以只覆盖能力或地址；修改地址会保留未显式覆盖的能力元数据。
+
+### 模型键与调用 ID
+
+在 Magpie 中调用时使用 `kunbot/<模型键>`，不要把这个完整 ID 当作上游真实 ID：
+
+| 来源 | 调用 ID 示例 |
+| --- | --- |
+| 管理页新增模型 | `kunbot/manual/MiniMax-H3-Image` |
+| 自动发现且未沿用旧目录键 | `kunbot/<真实ID>` |
+| 原有公共目录模型 | `kunbot/<route>/<真实ID>` |
+
+TTS / 转写的模型键最后一段需让 Magpie 识别类型，例如 `tts-voice`、`voice-tts`、`whisper-1` 或 `voice-transcribe`。真实上游 ID 不符合时，使用可识别的键并用 `id` 指向实际值。管理页新增语音模型时会为键添加对应前缀。
+
+## 旧账号与旧配置
+
+已有账号无需重新登录。`models`、`extraModels`、`routes`、`endpoints` 及旧账号地址字段继续读取，管理页保存时保留未编辑的高级字段。
+
+地址选择顺序：
+
+1. 模型或候选显式指定的固定 `base`。
+2. 命名线路的旧账号 `endpointBaseURLs` 覆盖（如有），否则使用线路默认地址。
+3. 按模型或候选的 `suffix` 拼接地址。
+4. 仅对没有显式候选的旧目录模型，应用旧账号的 `requestBaseURL`、`baseURL`、`baseURLs` 前缀覆盖。
+
+旧账号的请求前缀保留原目录路径；命名线路和固定模型地址不受它覆盖。新登录只收集名称和 Key，新地址统一在管理页配置。
+
+## 账号与数据流
+
+- API Key 由 Magpie 保存在当前配置目录的 `plugin-auth.json` 中；不写入模型 Options。
+- 正常模型请求使用当前选中账号的 Key，发送到所配置线路或目录提供的模型地址。
+- 测试后端从宿主传入的配置目录只读取 kunbot 账号，发送前重新确认账号状态；前端只收到账号名称和标识。
+- 测试服务仅监听回环地址，API 使用随机会话令牌。Web 模式经 Magpie 页面服务代理访问；服务端口冲突不影响普通模型请求。
+- 余额查询会向固定状态站 `ant.kunbot.org` 的 `/api/proprietary/key` 提交 Key，取得会话后读取 `/api/proprietary/access`，结果通常缓存 30 分钟。
+- 当公共专有目录确实包含模型时，模型列表刷新也会查询该 Key 的专有权限；手动模型不依赖这项查询。
+
+## 常见问题
+
+| 现象 | 检查方法 |
+| --- | --- |
+| 看不到管理页或模型测试入口 | 检查安装版本及当前负责 `kunbot` 的插件，升级后重启 Magpie |
+| 共用主机发现不到模型 | 检查它是否提供 `<base>/models`；可填写独立目录 URL，或关闭发现后补充手动模型 |
+| 图片模型不出现在图像设置中 | 在本插件中选择“图像生成”，保存后确认该模型在提供商中已启用 |
+| 模型出现但调用失败 | 先预览最终地址与请求体，再发送测试，检查 HTTP 状态、真实 ID、协议及权限 |
+| 测试服务无法连接 | 检查 `diagnosticsPort` 是否被其他程序或 Magpie 实例占用 |
+| 返回配置时仍提示 `wails.localhost` 拒绝连接 | 确认实际加载的是 0.3.1 或更新版本，并重启 Magpie |
+| 提供商里的“Add model”没有生成可用端点 | 请在本插件管理页添加模型；提供商模型选择器不会创建插件路由配置 |
+
+## 开发与验证
+
+```sh
+npm test
+```
+
+当前 36 项自动化测试使用模拟请求与临时账号，不使用真实 Key 或付费模型。另已用 Magpie v0.1.4267 验证配置保存、登录、模型测试和返回流程；Windows 虚拟主机失效场景使用浏览器模拟，未在真实 Windows WebView2 上运行。
+
+| 文件 | 用途 |
+| --- | --- |
+| `index.mjs` | 供应商配置、登录、目录与余额钩子 |
+| `lib/routing.mjs` | 地址解析、账号发现缓存与主备转发 |
+| `lib/diagnostics.mjs` | 协议示例、诊断记录与脱敏 |
+| `lib/diagnostic-service.mjs` | 本地测试服务与配置页资源 |
+| `page/` | 配置页、测试页及消息桥接 |
+| `test/` | 路由和诊断回归测试 |
 
 ## 许可证
 

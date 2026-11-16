@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>kunbot · 线路与模型</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="_magpie/bridge.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <div class="brand"><span class="mark" aria-hidden="true">k</span><span>kunbot<span class="version">0.3.1</span></span></div>
+        <h1>线路与模型</h1>
+        <p class="intro">把不同地址的模型放在一起。主线优先，失败时自动尝试备线。</p>
+        <div class="stats"><span id="route-count">0 条线路</span><span id="model-count">0 个手动模型</span><span>使用现有账号的 API Key</span></div>
+        <button id="open-tests" class="test-entry" type="button">模型测试 · 查看请求与响应</button>
+      </header>
+
+      <div id="loading" role="status">正在读取插件配置…</div>
+      <div id="editor" hidden>
+        <section aria-labelledby="routes-title">
+          <div class="section-heading"><div><h2 id="routes-title">线路</h2><p>按优先顺序排列。同名模型自动合并，只有提供该模型的线路才参与切换。</p></div><button id="add-route" type="button">＋ 添加线路</button></div>
+          <div id="routes" class="cards"></div>
+          <div id="route-empty" class="empty"><strong>添加第一条线路</strong><p>可填共用主机 https://ant.kunbot.org，再给模型设置后缀；也支持完整 API 地址。</p></div>
+          <label class="catalog-option"><input id="include-catalog" type="checkbox"><span>同时保留 kunbot 状态站发布的模型<span class="hint">使用原有公共目录；只想使用上面配置的线路时可关闭。</span></span></label>
+        </section>
+
+        <section aria-labelledby="models-title">
+          <div class="section-heading"><div><h2 id="models-title">手动模型</h2><p>填写真实 ID 并选择线路。多个模型共用一个主机时，只需分别填写路径后缀。</p></div><button id="add-model" type="button">＋ 添加模型</button></div>
+          <div id="models" class="cards"></div>
+          <div id="model-empty" class="empty"><strong>公开模型无需逐个添加</strong><p>在线路上打开“自动发现模型”即可。这里用于补充目录中没有的模型。</p></div>
+          <p id="preserved" class="hint" hidden></p>
+        </section>
+
+        <aside class="note"><strong>账号和 Key 仍在 Magpie 中管理</strong><p>保存后，插件使用当前账号同步模型。生图模型请再到 Magpie 的图像模型设置中选择。这里不会读取或保存你的 Key。</p></aside>
+        <footer class="savebar"><div><span id="save-state">配置已载入</span><p id="status" role="status" aria-live="polite">修改后点击保存。</p></div><button id="save" class="primary" type="button">保存配置</button></footer>
+      </div>
+    </main>
+  </body>
+</html>

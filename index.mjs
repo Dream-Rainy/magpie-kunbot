@@ -21,12 +21,15 @@
 // the site reports as down is still listed: the probe is the site's business,
 // not a decision this plugin should make about what an agent may ask for.
 //
-// The status site is fixed at ant.kunbot.org. Every endpoint below is read
-// from that site's own catalogs; none of the model or gateway addresses are
-// written here. A Base URL given at sign-in only rewrites model requests.
+// Legacy discovery uses ant.kunbot.org. Named endpoints, automatic discovery
+// and manual models are configured through the plugin page. Their complete
+// API prefixes are resolved per model and per selected account.
+
+import { createRoutes, routeRequest, forwardRequest } from "./lib/routing.mjs"
+import { startDiagnosticService } from "./lib/diagnostic-service.mjs"
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.1.7"
+const CLIENT = "magpie-kunbot/0.3.1"
 
 // The status site: the one address the plugin knows. It serves the catalogs
 // and holds the balance session; the model gateway is a different host, and
@@ -87,6 +90,111 @@ const parseBaseOverrides = (value) => {
   return Object.keys(map).length ? { baseURLs: map } : null
 }
 
+// Model kinds the plugin's `models` option can name, and the modalities
+// each one means. A model the catalog cannot classify (an image route whose
+// note was masked, a speech route, a second endpoint) is declared here.
+const MODEL_KINDS = {
+  text: { input: ["text"], output: ["text"], tool_call: true },
+  vision: { input: ["text", "image"], output: ["text"], tool_call: true },
+  image: { input: ["text"], output: ["image"], tool_call: false },
+  audio: { input: ["text"], output: ["audio"], tool_call: false },
+  transcription: { input: ["audio"], output: ["text"], tool_call: false },
+  video: { input: ["text"], output: ["video"], tool_call: false },
+}
+
+const MODEL_KIND_ALIASES = {
+  text: "text",
+  chat: "text",
+  vision: "vision",
+  image: "image",
+  "image-generation": "image",
+  "image generation": "image",
+  img: "image",
+  draw: "image",
+  audio: "audio",
+  tts: "audio",
+  speech: "audio",
+  "text-to-speech": "audio",
+  transcription: "transcription",
+  transcribe: "transcription",
+  asr: "transcription",
+  stt: "transcription",
+  "speech-to-text": "transcription",
+  video: "video",
+  "video-generation": "video",
+}
+
+const modalityList = (value, fallback) => {
+  if (!Array.isArray(value)) return fallback
+  const out = value.map((v) => String(v).trim().toLowerCase()).filter((v) => v === "text" || v === "image" || v === "audio" || v === "video" || v === "pdf")
+  return out.length ? [...new Set(out)] : fallback
+}
+
+// `models` is the plugin option that names models the catalog cannot:
+//
+//   { "7sref/MiniMax-H3-Image": "image",
+//     "tts/voice": { "type": "audio", "base": "https://…/v1", "id": "voice" } }
+//
+// A string is a kind. An object's `base` (or `base_url`) is required for a
+// model the catalog does not know; a known model keeps its catalog address
+// unless `base` overrides it. The route's own `<gateway>/<route>/v1` is used
+// when `base` is omitted and the gateway's base is known.
+function configuredModels(models, specs, gatewayBase, log = () => {}) {
+  if (!specs || typeof specs !== "object" || Array.isArray(specs)) return models
+  const out = { ...(models ?? {}) }
+  for (const [rawKey, rawSpec] of Object.entries(specs)) {
+    const key = String(rawKey).trim()
+    if (!key) continue
+    const spec = typeof rawSpec === "string" ? { type: rawSpec } : rawSpec
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+      log(`model ${key}: the option must be a kind or an object`)
+      continue
+    }
+    const askedKind = spec.type == null ? "" : String(spec.type).trim().toLowerCase()
+    const kindName = askedKind ? MODEL_KIND_ALIASES[askedKind] : ""
+    const kind = kindName ? MODEL_KINDS[kindName] : null
+    if (askedKind && !kind) {
+      log(`model ${key}: unknown type ${JSON.stringify(spec.type)}`)
+      continue
+    }
+    const prev = out[key]
+    const route = key.includes("/") ? key.split("/")[0] : ""
+    const inherited = prev?.provider?.api ?? (gatewayBase && route ? `${gatewayBase.replace(/\/+$/, "")}/${route}/v1` : "")
+    const askedBase = spec.base ?? spec.base_url ?? spec.url
+    const base = askedBase !== undefined ? normalizeBase(askedBase) : normalizeBase(inherited)
+    if (!base) {
+      log(`model ${key}: no base URL (set its "base" in the plugin's models option)`)
+      continue
+    }
+    const id = String(spec.id ?? prev?.id ?? key.split("/").slice(1).join("/") ?? "").trim() || key
+    const input = modalityList(spec.input, kind?.input ?? prev?.modalities?.input ?? ["text"])
+    const output = modalityList(spec.output, kind ? kind.output : prev?.modalities?.output ?? ["text"])
+    const limit = { context: 0, output: 0, ...(prev?.limit ?? {}) }
+    if (spec.context != null) limit.context = num(spec.context) ?? 0
+    if (spec.output_limit != null) limit.output = num(spec.output_limit) ?? 0
+    out[key] = {
+      ...(prev ?? {}),
+      name: String(spec.name ?? prev?.name ?? id),
+      id,
+      provider: {
+        ...(prev?.provider ?? {}),
+        npm: String(spec.npm ?? prev?.provider?.npm ?? "@ai-sdk/openai-compatible"),
+        api: base,
+      },
+      limit,
+      reasoning: spec.reasoning ?? prev?.reasoning ?? false,
+      // A media model is not a tool caller unless its own option says so;
+      // a text one keeps the catalog's answer when it had one.
+      tool_call: spec.tool_call ?? kind?.tool_call ?? prev?.tool_call ?? false,
+      modalities: { input, output },
+      cost: spec.cost ?? prev?.cost ?? {},
+      variants: spec.variants ?? prev?.variants ?? {},
+      ...(spec.rate !== undefined ? { rate: spec.rate } : prev?.rate !== undefined ? { rate: prev.rate } : {}),
+    }
+  }
+  return out
+}
+
 const urlOf = (input) => (typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? String(input))
 
 const rewriteRequest = (input, base) => {
@@ -123,7 +231,7 @@ const baseFor = (input, map, fallback) => {
 // The reasoning efforts magpie's agents already know how to send. A route's
 // thinkingLevelMap names the ones it takes: a level mapped to null is one the
 // route does not accept, so it is not offered.
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"]
 
 const effortsFor = (map) => (map && typeof map === "object" ? EFFORTS.filter((e) => map[e] != null) : EFFORTS)
 
@@ -151,7 +259,7 @@ const ENDPOINTS = {
 }
 
 const getJSON = async (url, init) => {
-  const res = await fetch(url, { ...init, headers: { accept: "application/json", ...(init?.headers ?? {}) } })
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000), ...init, headers: { accept: "application/json", ...(init?.headers ?? {}) } })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText || ""}`.trim())
   return res.json()
 }
@@ -176,8 +284,12 @@ function modelsFromCatalog(catalog) {
     // serves is OpenAI Chat Completions today; anything else is left to a
     // future revision of this plugin rather than guessed at.
     if (p?.api && !/openai-completions|openai-chat/i.test(p.api)) continue
+    // A route with no address cannot be sent to: leave it out rather than
+    // list a model magpie can only fail with "nowhere to send its requests".
+    const base = normalizeBase(p?.baseUrl)
+    if (!base) continue
     // /v1 at the end of the base is preceded by the route: .../<route>/v1.
-    const route = /\/([^/]+)\/v1\/?$/.exec(String(p?.baseUrl ?? ""))?.[1] ?? pid.replace(/^fishlb-/, "")
+    const route = /\/([^/]+)\/v1\/?$/.exec(base)?.[1] ?? pid.replace(/^fishlb-/, "")
     for (const m of p?.models ?? []) {
       const id = m?.id
       if (!id) continue
@@ -196,7 +308,7 @@ function modelsFromCatalog(catalog) {
         id,
         // Per-model address: the route's own /v1, taken from the catalog. The
         // provider-level `api` below is only a fallback.
-        provider: { npm: "@ai-sdk/openai-compatible", api: p?.baseUrl },
+        provider: { npm: "@ai-sdk/openai-compatible", api: base },
         limit: { context: ctx ?? 200000, ...(max ? { output: max } : {}) },
         reasoning: m?.reasoning === true,
         tool_call: true,
@@ -230,7 +342,7 @@ function modelsFromCatalog(catalog) {
 function proprietaryModels(feed) {
   const models = feed?.models
   if (!models || typeof models !== "object") return null
-  const host = feed?.base_url
+  const host = normalizeBase(feed?.base_url)
   if (!host) return null
   const out = {}
   for (const id of Object.keys(models)) {
@@ -270,7 +382,7 @@ function imageIdsFromNote(note) {
 }
 
 function imagesFromOpenweight(feed) {
-  const base = String(feed?.base_url ?? "").replace(/\/+$/, "")
+  const base = normalizeBase(feed?.base_url)
   if (!base) return null
 
   const out = {}
@@ -371,9 +483,11 @@ async function readAccess(key) {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ key }),
+    signal: AbortSignal.timeout(8000),
   })
   if (!post.ok) {
     const body = await post.json().catch(() => ({}))
+    if (![400, 401, 403].includes(post.status)) return { ok: false, error: `the site answered ${post.status}` }
     // The site answers 400 with a reason rather than a `state` for a key the
     // gateway does not recognise. That is still a verdict about the key, so
     // it is normalised to the same shape as a session read: `access` always
@@ -403,7 +517,7 @@ async function readAccess(key) {
   const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ") || undefined
   if (!cookie) return { ok: false, error: "the site set no session for this key" }
 
-  const res = await fetch(ENDPOINTS.access, { headers: { accept: "application/json", cookie } })
+  const res = await fetch(ENDPOINTS.access, { headers: { accept: "application/json", cookie }, signal: AbortSignal.timeout(8000) })
   if (!res.ok) return { ok: false, error: `the site answered ${res.status}` }
   const body = await res.json().catch(() => null)
   const value = { ok: true, access: body }
@@ -411,35 +525,78 @@ async function readAccess(key) {
   return value
 }
 
-export const KunbotAntPlugin = async ({ client }) => {
+export const KunbotAntPlugin = async ({ client, directory, magpie }, options = {}) => {
   const log = (level, message) => {
     try {
       client?.app?.log?.({ level, service: PROVIDER, message })
     } catch {}
   }
+  // `models` names what the catalog cannot: a masked image id, a speech
+  // model, or a model on another endpoint. It is a plugin option, so it
+  // applies to every account rather than living in one sign-in.
+  const routes = createRoutes(options, configuredModels, message => log("warn", message))
 
   // The public feeds are read once and kept for a while
   // rather than on every hook call.
-  let cache = { until: 0, models: null, proprietary: null, images: null }
+  let cache = { until: 0, models: null, proprietary: null, images: null, gatewayBase: "" }
+  let refreshing
   const CATALOG_TTL = 5 * 60 * 1000
 
   const refresh = async () => {
-    if (cache && cache.until > Date.now() && cache.models) return cache
+    if (!routes.includeCatalog || cache.until > Date.now()) return cache
+    if (refreshing) return refreshing
+    refreshing = (async () => {
     const [catalog, proprietary, openweight] = await Promise.allSettled([
       getJSON(ENDPOINTS.catalog),
       getJSON(ENDPOINTS.proprietary),
       getJSON(ENDPOINTS.openweight),
     ])
-    const models = catalog.status === "fulfilled" ? modelsFromCatalog(catalog.value) : null
-    if (!models) throw new Error("the site's model catalog could not be read")
-    const images = openweight.status === "fulfilled" ? imagesFromOpenweight(openweight.value) : null
+    const gatewayBase = openweight.status === "fulfilled" ? normalizeBase(openweight.value?.base_url) || cache.gatewayBase : cache.gatewayBase
+    const models = catalog.status === "fulfilled" ? modelsFromCatalog(catalog.value) ?? cache.models : cache.models
+    const images = openweight.status === "fulfilled" ? imagesFromOpenweight(openweight.value) : cache.images
+    const paid = proprietary.status === "fulfilled" ? proprietaryModels(proprietary.value) : cache.proprietary
+    const failed = [catalog, proprietary, openweight].some(r => r.status === "rejected")
+    if (failed) log("warn", "Some public catalogs are unavailable; keeping their last successful models")
     cache = {
-      until: Date.now() + CATALOG_TTL,
+      until: Date.now() + (failed ? 30000 : CATALOG_TTL),
       models,
-      proprietary: proprietary.status === "fulfilled" ? proprietaryModels(proprietary.value) : null,
+      proprietary: paid,
       images,
+      gatewayBase,
     }
     return cache
+    })()
+    try { return await refreshing } finally { refreshing = null }
+  }
+
+  const modelTable = async (auth) => {
+    const cat = await refresh()
+    const available = { ...(cat.models ?? {}), ...(cat.images ?? {}) }
+    // Only a real proprietary list needs this optional permission lookup.
+    // Manual models and public models never depend on a balance session.
+    if (auth?.type === "api" && auth.key && Object.keys(cat.proprietary ?? {}).length) {
+      try {
+        const access = await readAccess(auth.key)
+        if (access?.access?.state === "ok") Object.assign(available, cat.proprietary)
+      } catch { log("warn", "Proprietary access lookup unavailable; other models remain usable") }
+    }
+    return routes.build(available, auth, cat.gatewayBase)
+  }
+
+  // Magpie passes its actual config directory, including portable installs.
+  // Other hosts and unit tests do not start a local service.
+  if (magpie && directory && globalThis.Bun) {
+    try {
+      await startDiagnosticService({ directory, modelTable, client: CLIENT, port: options.diagnosticsPort ?? 37747,
+        legacyURL: (url, auth) => {
+          const saved = parseBaseOverrides(auth.metadata?.requestBaseURL) ?? {}
+          const base = normalizeBase(auth.metadata?.baseURL) || saved.baseURL || null
+          const bases = normalizeBaseMap(auth.metadata?.baseURLs) || saved.baseURLs || null
+          const override = baseFor(url, bases, base)
+          return override ? rewriteRequest(url, override) : url
+        },
+      })
+    } catch { log("warn", "Model diagnostics could not start; check whether its local port is already in use. Provider requests remain available.") }
   }
 
   return {
@@ -459,12 +616,16 @@ export const KunbotAntPlugin = async ({ client }) => {
         models: {},
       }
       try {
-        const { models, images } = await refresh()
+        const models = await modelTable()
         for (const [k, m] of Object.entries(models)) {
-          cfg.provider[PROVIDER].models[k] ??= m
-        }
-        for (const [k, m] of Object.entries(images ?? {})) {
-          cfg.provider[PROVIDER].models[k] ??= m
+          if (!m?.provider?.api) {
+            log("warn", `model ${k}: no base URL; skipped`)
+            continue
+          }
+          // The catalog (and the models option) is the source of truth:
+          // assign rather than ??=, so a changed base or type reaches the
+          // provider config magpie saved from an earlier load.
+          cfg.provider[PROVIDER].models[k] = m
         }
       } catch (e) {
         log("warn", `catalog unavailable: ${e?.message ?? e}`)
@@ -482,19 +643,9 @@ export const KunbotAntPlugin = async ({ client }) => {
           prompts: [
             {
               type: "text",
-              key: "requestBaseURL",
-              message: "Request Base URL",
-              placeholder: "blank, a URL, or maid=https://…, uni=https://…",
-              validate: (v) =>
-                parseBaseOverrides(v) !== null
-                  ? undefined
-                  : "An http(s) URL, or route=URL pairs separated by commas, e.g. maid=https://proxy.example",
-            },
-            {
-              type: "text",
               key: "email",
               message: "Account name",
-              placeholder: "blank = the first account; name a mirror to keep it apart",
+              placeholder: "e.g. personal or work; optional",
               validate: (v) =>
                 String(v ?? "").trim().length <= 64 ? undefined : "Keep the account name to 64 characters",
             },
@@ -516,21 +667,22 @@ export const KunbotAntPlugin = async ({ client }) => {
         // model's `provider.api`, which would collapse the catalog's many
         // routes onto one address. The per-route overrides are applied per
         // request here instead, so each route keeps its own base.
-        // New sign-ins keep the prompt answer as typed; older ones kept the
-        // normalized fields. Read either, so upgrading need not sign in
-        // again.
+        // Keep address overrides saved by older versions. New sign-ins only
+        // collect the key and account name; addresses live in the plugin page.
         const saved = parseBaseOverrides(auth.metadata?.requestBaseURL) ?? {}
         const base = normalizeBase(auth.metadata?.baseURL) || saved.baseURL || null
         const bases = normalizeBaseMap(auth.metadata?.baseURLs) || saved.baseURLs || null
         return {
           async fetch(input, init) {
-            const headers = new Headers(init?.headers)
-            headers.set("authorization", `Bearer ${auth.key}`)
-            headers.set("x-api-key", auth.key)
-            headers.set("x-kunbot-client", CLIENT)
+            const route = routeRequest(input)
+            if (route) {
+              const table = await modelTable(auth)
+              const targets = table[route.key]?._targets
+              if (!targets?.length) throw new Error(`No endpoints available for model ${route.key}`)
+              return forwardRequest(input, init, { auth, client: CLIENT, targets, route, log: message => log("warn", message) })
+            }
             const override = baseFor(input, bases, base)
-            const target = override ? rewriteRequest(input, override) : input
-            return fetch(target, { ...init, headers })
+            return forwardRequest(input, init, { auth, client: CLIENT, legacyURL: override ? rewriteRequest(input, override) : undefined })
           },
         }
       },
@@ -543,19 +695,14 @@ export const KunbotAntPlugin = async ({ client }) => {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return { error: "Not signed in", windows: [] }
 
-        let cat
-        try {
-          cat = await refresh()
-        } catch (e) {
-          return { error: `Couldn't read the site: ${e?.message ?? e}`, windows: [] }
-        }
-
         // A key without Proprietary Access cannot use the paid models at all.
         // That is the single most useful thing to say about such a key, so it
         // is checked first and said plainly. The balance flow needs the key to
         // be known to the site, so a key the site has never seen is reported
         // as such rather than as a failure.
-        const access = await readAccess(auth.key)
+        let access
+        try { access = await readAccess(auth.key) }
+        catch { return { error: "The site's balance service is unavailable", windows: [] } }
         const state = access?.access?.state
 
         if (state === "anonymous" || state === "no_pma" || state === "revoked") {
@@ -586,15 +733,14 @@ export const KunbotAntPlugin = async ({ client }) => {
       },
     },
 
-    // The models this account has. The catalog is public, so the same list is
-    // returned for every key; what the key changes is whether the proprietary
-    // models are added at all.
+    // Each account discovers its own endpoint models. Manual declarations are
+    // shared, but endpoint overrides and request credentials stay scoped.
     provider: {
       id: PROVIDER,
       async models(provider, { auth } = {}) {
-        let cat
+        let models
         try {
-          cat = await refresh()
+          models = await modelTable(auth)
         } catch (e) {
           log("warn", `model list failed: ${e?.message ?? e}`)
           return provider.models
@@ -608,32 +754,13 @@ export const KunbotAntPlugin = async ({ client }) => {
         // the first one.
         const template = Object.values(provider.models ?? {})[0]
         const out = {}
-        for (const [key, m] of Object.entries(cat.models)) {
-          out[key] = hookModel(template, m)
+        for (const [key, m] of Object.entries(models)) {
+          const model = hookModel(template, m)
+          if (model.api.url) out[key] = model
+          else log("warn", `model ${key}: no base URL; skipped`)
         }
 
-        // Image-generation routes are not in the pi catalog. Their models get
-        // the route's address and an image output modality, which is what
-        // magpie's /v1/images/generations asks a plugin model for.
-        for (const [key, m] of Object.entries(cat.images ?? {})) {
-          out[key] = hookModel(template, m)
-        }
-
-        // Proprietary models join the list only for a key that has Proprietary
-        // Access; without it the gateway answers 403 and listing them would
-        // only produce failures. The balance flow is best-effort, so a key the
-        // site has never seen is treated as open-weight-only rather than as a
-        // broken sign-in.
-        if (auth?.type === "api" && auth.key && cat.proprietary) {
-          const access = await readAccess(auth.key)
-          if (access?.access?.state === "ok") {
-            for (const [key, m] of Object.entries(cat.proprietary)) {
-              out[key] = hookModel(template, m)
-            }
-          }
-        }
-
-        return Object.keys(out).length ? out : provider.models
+        return out
       },
     },
   }
@@ -645,6 +772,7 @@ export const _internal = {
   modelsFromCatalog,
   proprietaryModels,
   imagesFromOpenweight,
+  configuredModels,
   imageIdsFromNote,
   readAccess,
   normalizeBase,
