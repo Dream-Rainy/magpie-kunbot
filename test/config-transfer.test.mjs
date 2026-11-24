@@ -6,6 +6,16 @@ import { _internal } from "../index.mjs"
 
 const { encode, decode, validate, LIMIT } = globalThis.KunbotConfigTransfer
 
+it('should restore a model protocol across backups when endpoint discovery defaults differ', () => {
+  // Arrange
+  const options = { routes: { main: { base: "https://main.example/v1", protocol: "chat" }, spare: { base: "https://spare.example/v1", protocol: "anthropic" } }, models: { shared: { id: "native-primary", protocol: "gemini", targets: [{ endpoint: "main", suffix: "v1beta" }, { endpoint: "spare", id: "native-backup", suffix: "native/v1beta" }], context: 8192 } } }
+  // Act
+  const restored = decode(encode(options, "0.4.1"))
+  // Assert
+  assert.deepEqual(restored.options, options)
+  assert.deepEqual(restored.summary, { routes: 2, models: 1, includeCatalog: true })
+})
+
 it('should retain native protocols when Gemini and System One configurations are exported and imported', () => {
   // Arrange
   const options = { includeCatalog: false, routes: { google: { base: "https://google.example/v1beta", protocol: "gemini" }, decide: { base: "https://decide.example/v1", protocol: "systemone" } }, models: { native: { id: "g", endpoint: "google", suffix: "relay/v1beta" }, classifier: { id: "c", endpoint: "decide" } } }

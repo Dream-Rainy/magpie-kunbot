@@ -61,7 +61,11 @@ function newRouteID() {
     if (!routeRows.some(r => r.id === id)) return id
   }
 }
-function protocolOf(s) { return s.protocol ?? Object.keys(sdks).find(k => sdks[k] === s.npm) ?? (s.npm || "chat") }
+function protocolOf(s, fallback = "chat") {
+  if (s.protocol === "systemone") return "systemone"
+  if (s.npm) return Object.keys(sdks).find(k => sdks[k] === s.npm) ?? s.npm
+  return s.protocol ?? fallback
+}
 
 function load(options) {
   original = clone(options)
@@ -74,14 +78,16 @@ function load(options) {
   modelRows = []
   const addModel = (key, raw, source) => {
     const s = specOf(raw), targets = s.targets ?? []
-    let endpoint = s.endpoint ?? targets[0]?.endpoint ?? ""
+    const endpoint = targets[0]?.endpoint ?? s.endpoint ?? ""
     const base = s.base ?? s.base_url ?? s.url
+    const inheritedProtocol = routeRows.find(r => r.id === endpoint)?.protocol ?? (base || targets.length ? "chat" : "")
+    const protocol = protocolOf(targets[0] ?? {}, protocolOf(s, inheritedProtocol))
     // Fixed-base overrides and legacy type-only overrides are preserved as-is
     // unless the user explicitly selects a named route in the form.
     // A candidate's id may differ from the model's default id. Keeping those
     // separate also preserves backup candidates which inherit the default.
     const id = String(s.id ?? (key.includes("/") ? key.slice(key.indexOf("/") + 1) : key))
-    modelRows.push({ key, id, name: s.name ?? "", type: s.type ?? "", suffix: s.suffix ?? "", endpoint, backup: targets[1]?.endpoint ?? "", raw: s, source, fixed: base, changedRouting: false })
+    modelRows.push({ key, id, name: s.name ?? "", type: s.type ?? "", suffix: s.suffix ?? "", protocol, endpoint, backup: targets[1]?.endpoint ?? "", raw: s, source, fixed: base, changedRouting: false, changedProtocol: false })
   }
   for (const [key, s] of Object.entries(options.models ?? options.extraModels ?? {})) addModel(key, s, "models")
   for (const route of routeRows) {
@@ -113,17 +119,17 @@ function renderRoutes() {
     const fields = el("div", { class: "fields" }, [
       field("线路名称", r.name, v => { r.name = v; title.textContent = v || "新线路"; renderModels() }, { placeholder: "主线 / 备线 / 专有" }),
       field("完整 Base URL", r.base, v => { r.base = v; renderModels() }, { type: "url", placeholder: "https://ant.kunbot.org 或完整 API 前缀", spellcheck: "false" }),
-      select("接口协议", r.protocol, protocolLabels, v => { r.protocol = v; render() }),
+      el("p", { class: "hint", text: "调用协议在各模型中单独设置。" }),
     ])
     const details = el("details", {}, [el("summary", { text: "目录地址与线路标识" }),
+      select("自动发现默认协议", r.protocol, protocolLabels, v => { r.protocol = v }),
+      el("p", { class: "hint", text: "用于目录鉴权和未覆盖模型的默认协议。手动模型使用自己的协议。" }),
       field("模型目录地址（可选，默认 Base URL + /models）", r.modelsURL, v => { r.modelsURL = v }, { class: "wide", placeholder: "https://api.example.com/v1/models", type: "url" }),
       el("p", { class: "hint", text: `线路标识：${r.id}` }),
     ])
-    const protocolHint = r.protocol === "systemone" ? "此线路的模型将作为路由组的决策分类器，不用于普通对话。填写 API 前缀，插件会追加 /systemone。"
-      : r.protocol === "gemini" ? "填写 Gemini 完整 API 前缀（通常以 /v1beta 结尾），使用原生 generateContent 接口。" : ""
     return el("article", { class: "card", "data-route": r.id }, [
       el("div", { class: "card-head" }, [el("div", { class: "card-title" }, [el("span", { class: `badge ${index === 0 ? "first" : ""}`, text: `${index + 1}${index === 0 ? " · 优先" : ""}` }), title]), actions]),
-      fields, ...(protocolHint ? [el("p", { class: "hint", text: protocolHint })] : []),
+      fields,
       check("自动发现模型", r.discover, v => { r.discover = v }, "通过当前账号获取 /models 目录"), details,
     ])
   }))
@@ -151,7 +157,8 @@ function previewAddresses(m, node) {
       if (!base) return null
       const suffix = validSuffix(target.suffix ?? m.suffix)
       const cleanBase = validURL(base, "线路地址")
-      const npm = target.npm ?? sdks[target.protocol] ?? m.raw.npm ?? sdks[m.raw.protocol] ?? sdks[route?.protocol] ?? route?.protocol
+      const selectedProtocol = m.protocol || route?.protocol || "chat"
+      const npm = (!m.changedProtocol ? target.npm ?? sdks[target.protocol] : undefined) ?? sdks[selectedProtocol] ?? selectedProtocol
       const google = npm === sdks.gemini
       const root = cleanBase.replace(google ? /\/v1(?:beta)?$/ : /\/v1$/, "")
       const versioned = google ? /(?:^|\/)v1(?:beta)?$/.test(suffix) : /(?:^|\/)v1$/.test(suffix)
@@ -172,13 +179,19 @@ function renderModels() {
       field("显示名称（可选）", m.name, v => { m.name = v; title.textContent = v || m.id || "新模型" }, { placeholder: "方便识别的名称" }),
       select("模型类型", m.type, { "": "保留目录能力", ...types }, v => { m.type = v }),
     ])
-    const compatible = Object.fromEntries(routeRows.filter(r => r.id !== m.endpoint && r.protocol === routeRows.find(r => r.id === m.endpoint)?.protocol).map(r => [r.id, r.name || r.id]))
+    const backups = Object.fromEntries(routeRows.filter(r => r.id !== m.endpoint).map(r => [r.id, r.name || r.id]))
     const addresses = el("div", { class: "model-addresses", "data-address-preview": "", "aria-live": "polite" })
+    const inheritedDirectory = m.key && !m.endpoint && !m.fixed && !m.raw.targets?.length
+    const protocolField = select("接口协议", m.protocol, m.protocol ? protocolLabels : { "": "沿用目录协议", ...protocolLabels }, v => { m.protocol = v; m.changedProtocol = true; renderModels() })
+    protocolField.querySelector("select").disabled = !!inheritedDirectory
     const routing = el("div", { class: "fields model-routing" }, [
-      select("主线路", m.endpoint, primaryChoices, v => { m.endpoint = v; m.changedRouting = true; if (m.backup === v) m.backup = ""; renderModels() }),
-      select("备用线路（可选）", m.backup, { "": "不设置", ...compatible }, v => { m.backup = v; m.changedRouting = true; previewAddresses(m, addresses) }),
-      field("模型路径后缀（可选）", m.suffix, v => { m.suffix = v; previewAddresses(m, addresses) }, { placeholder: "例如 7sref、omni、salt", spellcheck: "false" }),
+      protocolField,
+      select("主线路", m.endpoint, primaryChoices, v => { m.endpoint = v; m.changedRouting = true; if (!m.protocol && v) m.protocol = routeRows.find(r => r.id === v).protocol; if (m.backup === v) m.backup = ""; renderModels() }),
+      select("备用线路（可选）", m.backup, { "": "不设置", ...backups }, v => { m.backup = v; m.changedRouting = true; previewAddresses(m, addresses) }),
     ])
+    const suffixField = el("div", { class: "model-routing" }, [field("模型路径后缀（可选）", m.suffix, v => { m.suffix = v; previewAddresses(m, addresses) }, { placeholder: "例如 image-route、omni、salt", spellcheck: "false" })])
+    const protocolHint = inheritedDirectory ? "未绑定线路的旧目录覆盖沿用原协议；选择主线路后可单独设置协议。" : m.protocol === "systemone" ? "此模型用于路由组的决策分类器，不用于普通对话。API 前缀后追加 /systemone。"
+      : m.protocol === "gemini" ? "此模型使用 Gemini 原生 API；请确认完整地址或模型后缀对应原生接口（通常为 /v1beta）。" : "所选协议用于这个模型的主备线路，线路需支持对应接口。"
     previewAddresses(m, addresses)
     const advanced = el("details", {}, [el("summary", { text: "模型能力（可选）" }), el("div", { class: "fields" }, [
       field("上下文长度", m.raw.context, v => { if (v) m.raw.context = Number(v); else delete m.raw.context }, { type: "number", min: "0", placeholder: "沿用目录" }),
@@ -187,7 +200,7 @@ function renderModels() {
     ]), ...(m.raw.targets?.length > 2 ? [el("p", { class: "hint", text: "此模型有多条高级候选线路；未修改线路选择时会完整保留。" })] : []), ...(m.raw.targets?.some(t => t.suffix != null) ? [el("p", { class: "hint", text: "高级候选中单独指定的后缀优先于模型后缀；修改主备选择会重新生成候选。" })] : [])])
     return el("article", { class: "card", "data-model": index }, [
       el("div", { class: "card-head" }, [el("div", { class: "card-title" }, [el("span", { class: "badge", text: types[m.type] ?? "模型" }), title]), el("div", { class: "actions" }, [button("移除", () => { modelRows.splice(index, 1); markDirty(); render() }, { class: "remove", "aria-label": `移除模型 ${m.id}` })])]),
-      fields, routing, el("p", { class: "hint suffix-hint", text: "后缀按协议补齐版本：Gemini 为 /v1beta，其他为 /v1。留空使用线路完整地址。" }), addresses, advanced,
+      fields, routing, el("p", { class: "hint suffix-hint", text: protocolHint }), suffixField, el("p", { class: "hint suffix-hint", text: "后缀按模型协议补齐版本：Gemini 为 /v1beta，其他为 /v1。留空使用线路完整地址。" }), addresses, advanced,
     ])
   }))
 }
@@ -223,11 +236,20 @@ function serialize() {
     if (!m.key && !m.endpoint) throw new Error(`请为模型“${m.id}”选择线路。`)
     if (m.endpoint && !routes[m.endpoint]) throw new Error(`模型“${m.id}”的线路不存在。`)
     if (m.backup && (!routes[m.backup] || !m.endpoint || m.backup === m.endpoint)) throw new Error(`请检查模型“${m.id}”的备用线路。`)
-    if (m.backup && routeRows.find(r => r.id === m.backup)?.protocol !== routeRows.find(r => r.id === m.endpoint)?.protocol) throw new Error(`模型“${m.id}”的主备线路需要使用相同协议。`)
     const key = m.key || `manual/${m.type === "audio" ? "tts-" : m.type === "transcription" ? "transcribe-" : ""}${m.id.trim()}`
     if (identities.has(key)) throw new Error(`模型“${m.id}”重复，请在同一个模型上选择主备线路。`)
     identities.add(key)
     const s = { ...m.raw, id: m.id.trim() }
+    if (m.endpoint || m.fixed || s.targets?.length) {
+      delete s.protocol; delete s.npm
+      if (m.protocol) {
+        if (sdks[m.protocol]) s.protocol = m.protocol
+        else s.npm = m.protocol
+      }
+    }
+    if (m.changedProtocol && Array.isArray(s.targets)) s.targets = s.targets.map(target => {
+      const copy = { ...target }; delete copy.protocol; delete copy.npm; return copy
+    })
     if (m.name.trim()) s.name = m.name.trim(); else delete s.name
     if (m.type) s.type = m.type; else delete s.type
     const suffix = validSuffix(m.suffix)
@@ -256,14 +278,14 @@ $("add-route").addEventListener("click", () => {
   markDirty(); render(); $("routes").lastElementChild.querySelector('input[type="url"]').focus()
 })
 $("add-model").addEventListener("click", () => {
-  modelRows.push({ key: "", id: "", name: "", type: "text", suffix: "", endpoint: routeRows[0]?.id ?? "", backup: "", raw: {}, changedRouting: true })
+  modelRows.push({ key: "", id: "", name: "", type: "text", suffix: "", protocol: "chat", endpoint: routeRows[0]?.id ?? "", backup: "", raw: {}, changedRouting: true, changedProtocol: false })
   markDirty(); render(); $("models").lastElementChild.querySelector("input").focus()
 })
 $("include-catalog").addEventListener("change", markDirty)
 $("export-config").addEventListener("click", () => {
   if (!loaded || saving) return
   try {
-    const json = transfer.encode(serialize(), "0.4.0")
+    const json = transfer.encode(serialize(), "0.4.1")
     resetTransfer(); $("export-panel").hidden = false; $("export-text").value = json
     transferStatus("已生成当前表单的备份；导出不会保存配置。", "success")
   } catch (e) { transferStatus(e.message, "error") }

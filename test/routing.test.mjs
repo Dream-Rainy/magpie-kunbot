@@ -19,6 +19,26 @@ async function plugin(options) {
   return { p, models: await p.provider.models({ models: {} }, { auth: auth() }), loader: await p.auth.loader(async () => auth()) }
 }
 
+it('should use each model protocol when one endpoint serves conversations and decisions', async t => {
+  // Arrange
+  const sent = []
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => { sent.push({ url, body: JSON.parse(init.body), headers: new Headers(init.headers) }); return json({ ok: true }) })
+  const { models, loader } = await plugin({ includeCatalog: false, routes: { shared: { base: "https://shared.example/v1", protocol: "chat" } },
+    models: { chat: { id: "chat", endpoint: "shared", protocol: "chat" }, responses: { id: "response", endpoint: "shared", protocol: "responses" }, anthropic: { id: "message", endpoint: "shared", protocol: "anthropic" }, gemini: { id: "native", endpoint: "shared", protocol: "gemini", suffix: "v1beta" }, systemone: { id: "classify", endpoint: "shared", protocol: "systemone" } },
+  })
+  const requests = [["chat", "/chat/completions"], ["responses", "/responses"], ["anthropic", "/messages"], ["gemini", "/models/native:generateContent"], ["systemone", "/systemone"]]
+  // Act
+  for (const [key, path] of requests) await loader.fetch(models[key].api.url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(key === "gemini" ? { contents: [] } : { model: "display" }) })
+  // Assert
+  assert.deepEqual(Object.values(models).map(model => model.api.npm), ["@ai-sdk/openai-compatible", "@ai-sdk/openai", "@ai-sdk/anthropic", "@ai-sdk/google", "@ai-sdk/openai-compatible"])
+  assert.equal(models.systemone.decides, true)
+  assert.equal(models.chat.decides, false)
+  assert.deepEqual(sent.map(request => request.url), ["https://shared.example/v1/chat/completions", "https://shared.example/v1/responses", "https://shared.example/v1/messages", "https://shared.example/v1beta/models/native:generateContent", "https://shared.example/v1/systemone"])
+  assert.deepEqual(sent[3].body, { contents: [] })
+  assert.equal(sent[3].headers.get("x-goog-api-key"), "test-key-A")
+})
+
 it('should discover native Gemini metadata when Google returns paginated model lists', async t => {
   // Arrange
   const requests = []

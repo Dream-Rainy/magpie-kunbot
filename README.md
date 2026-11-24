@@ -2,12 +2,13 @@
 
 kunbot 的 [Magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。在一个 `kunbot` 提供商中管理不同地址的模型，支持主备切换、多账号和请求诊断。
 
-当前插件版本：**0.4.0**。新增协议已通过 **Magpie v0.1.4267 原生插件宿主**集成验证。
+当前插件版本：**0.4.1**。接口协议在模型卡片中设置，同一 endpoint 可供不同协议的模型共用。
 
 ## 功能
 
 - 使用表单管理线路和模型，无需日常手写 Options JSON。
 - 支持 Chat、Responses、Anthropic Messages、Gemini 原生 API 和 System One 决策 API。
+- 每个手动模型独立选择调用协议，并将其用于该模型的主备线路。
 - 合并多条线路暴露的模型；同名且协议一致时优先主线，失败后尝试备线。
 - 为专有、隐藏、脱敏生图等目录外模型指定真实 ID、类型和独立地址。
 - 多个模型共用一个主机，分别填写模型路径后缀。
@@ -47,7 +48,7 @@ magpie plugin add github:wsyzxjn/magpie-kunbot
 1. 在 Magpie 插件页面找到 `kunbot`，点击登录；也可运行 `magpie plugin login kunbot`。
 2. 填写 **Account name** 和 **API Key**。名称可选；多个账号建议使用不同名称，例如 `personal`、`work`。登录不再询问地址。
 3. 打开侧边栏的 **kunbot · 线路与模型**。
-4. 添加线路或手动模型，点击 **保存配置**。
+4. 添加线路或手动模型，在模型卡片选择 **接口协议**，点击 **保存配置**。
 5. 到 `kunbot` 提供商中选择模型。生图模型还需在 Magpie 的图像模型设置中选用。
 
 正常请求使用 Magpie 选中的账号；线路与模型配置供这些账号共用。账号调度继续由 Magpie 管理，例如：
@@ -65,7 +66,7 @@ magpie provider set kunbot routing=rotate
 | 位置 | 填写内容 |
 | --- | --- |
 | 线路 → 完整 Base URL | `https://ant.kunbot.org` |
-| 线路 → 接口协议 | OpenAI Chat |
+| 模型 → 接口协议 | OpenAI Chat |
 | 模型 → 真实模型 ID | `your-image-model-id` |
 | 模型 → 模型类型 | 图像生成 |
 | 模型 → 主线路 | 选择上面的线路 |
@@ -89,7 +90,7 @@ https://ant.kunbot.org/image-route/v1/images/generations
 
 - `image-route`、`/image-route/`、`image-route/v1` 均生成 `…/image-route/v1`。
 - 线路末尾已有 `/v1` 时，将版本放到后缀之后；其余线路路径保留。
-- Gemini 线路的后缀默认补齐 `/v1beta`，线路末尾的 `/v1beta` 或 `/v1` 移到后缀之后；后缀已包含这两种版本之一时不再追加。
+- Gemini 模型的后缀默认补齐 `/v1beta`，线路末尾的 `/v1beta` 或 `/v1` 移到后缀之后；后缀已包含这两种版本之一时不再追加。
 - 后缀留空时，完整沿用线路地址，不自动添加 `/v1`。
 - 后缀接受字母、数字、`-._~` 和 `/` 分隔；不接受完整网址、查询参数、空路径段或 `.` / `..` 路径段。
 
@@ -102,22 +103,24 @@ https://ant.kunbot.org/image-route/v1/images/generations
 | 专有 | `https://anthropic.kunbot.art/v1` |
 | omni | `https://anthropic.kunbot.org/omni/v1` |
 
-模型选择对应线路，后缀留空即可。线路协议可选 OpenAI Chat、Anthropic Messages、OpenAI Responses、Gemini 原生 API 或 System One 决策 API，按上游实际接口选择；域名或模型名称不能代替协议设置。
+模型选择对应线路，后缀留空即可。在模型卡片的 **接口协议** 中选择 OpenAI Chat、Anthropic Messages、OpenAI Responses、Gemini 原生 API 或 System One 决策 API。不同模型可共用同一 endpoint 并选择不同协议；域名或模型名称不能代替协议设置。
 
-Chat 等线路的图片生成沿用 OpenAI Images 接口；Gemini 线路使用原生 `generateContent`，以 `responseModalities` 请求图像输出。
+Chat 等协议的图片生成沿用 OpenAI Images 接口；Gemini 模型使用原生 `generateContent`，以 `responseModalities` 请求图像输出。
 
 ### Gemini 与 System One
 
-| 线路协议 | `protocol` 值 | 完整 Base URL 示例 | 用途 |
+| 模型协议 | `protocol` 值 | 完整 Base URL 示例 | 用途 |
 | --- | --- | --- | --- |
 | Gemini 原生 API | `gemini` | `https://gateway.example/v1beta` | 原生文字、视觉和图像请求 |
 | System One 决策 API | `systemone` | `https://gateway.example/v1` | 路由组的决策分类器 |
 
-上述地址均为占位示例。线路后缀留空时完整沿用地址；共用主机时也可以按模型设置后缀，Gemini 默认补齐 `/v1beta`，System One 补齐 `/v1`。
+上述地址均为占位示例。模型后缀留空时完整沿用地址；共用主机时也可以按模型设置后缀，Gemini 默认补齐 `/v1beta`，System One 补齐 `/v1`。
 
 Gemini 的调用地址为 `<base>/models/<真实ID>:generateContent`，流式请求使用 `:streamGenerateContent?alt=sse`，认证使用当前账号的 `x-goog-api-key`。模型 ID 位于路径中，主备 ID 不同时会分别替换路径，不向原生 JSON 请求体加入 `model` 字段。
 
-System One 请求 `<base>/systemone`，发送 `model`、`questions`、`state`。插件自动声明决策能力，并将该线路上的模型标记为决策模型，供 Magpie 路由组的分类器选择；这些模型不用于普通对话。登录仍使用原有账号和 API Key。
+System One 请求 `<base>/systemone`，发送 `model`、`questions`、`state`。插件自动声明决策能力，并将选择此协议的模型标记为决策模型，供 Magpie 路由组的分类器选择；这些模型不用于普通对话。登录仍使用原有账号和 API Key。
+
+模型的协议保存为 `models.<key>.protocol`，优先于线路默认值。线路的 **目录地址与线路标识 → 自动发现默认协议** 用于目录鉴权和未覆盖的自动发现模型，不限制手动模型的调用协议。
 
 ### 自动发现与公共目录
 
@@ -133,7 +136,7 @@ System One 请求 `<base>/systemone`，发送 `model`、`questions`、`state`。
 { "data": [{ "id": "model-a" }, { "id": "model-b" }] }
 ```
 
-Gemini 线路同时接受原生 `models[]` 列表，读取 `name`、`displayName`、输入和输出限制，按 `nextPageToken` 加载后续页面；原生列表中只支持嵌入等操作的模型不会作为生成模型列出。
+自动发现默认协议为 Gemini 时，同时接受原生 `models[]` 列表，读取 `name`、`displayName`、输入和输出限制，按 `nextPageToken` 加载后续页面；原生列表中只支持嵌入等操作的模型不会作为生成模型列出。
 
 需要独立目录地址时，展开 **目录地址与线路标识**，填写模型目录地址。发现仍按线路查询，不会逐个拼接模型后缀；共用裸主机只用于手动模型时，可关闭发现。
 
@@ -166,7 +169,9 @@ Gemini 线路同时接受原生 `models[]` 列表，读取 `name`、`displayName
 
 自动发现的模型按真实 ID 取并集。同名且协议一致的模型只显示一次，按线路排列顺序尝试；主线独有、备线独有的模型只发给确实提供它的线路。不同协议的同名项不会被直接组成透明主备。
 
-手动模型按自己选择的主线路、备用线路尝试。两条线路可使用不同的完整路径；高级配置还能为备线指定不同的真实模型 ID。
+手动模型按自己选择的主线路、备用线路尝试，两条线路均使用该模型选择的调用协议，不按线路的自动发现默认协议筛选。线路仍需实际支持对应协议。两条线路可使用不同的完整路径；高级配置还能为备线指定不同的真实模型 ID。
+
+主动修改模型协议时，会将选择应用于已有全部候选，并保留候选各自的真实 ID、地址与后缀；未修改协议时，已有高级候选设置完整保留。
 
 | 情况 | 插件行为 |
 | --- | --- |
@@ -228,26 +233,29 @@ Magpie 的插件沙盒限制普通文件下载，因此导出使用可复制文�
 {
   "includeCatalog": false,
   "routes": {
-    "main": { "base": "https://ant.kunbot.org", "protocol": "chat" },
-    "backup": { "base": "https://backup.example", "protocol": "chat" },
-    "paid": { "base": "https://anthropic.kunbot.art/v1", "protocol": "anthropic" }
+    "main": { "base": "https://ant.kunbot.org" },
+    "backup": { "base": "https://backup.example" },
+    "paid": { "base": "https://anthropic.kunbot.art/v1" }
   },
   "fallback": ["main", "backup", "paid"],
   "models": {
     "manual/your-image-model-id": {
       "id": "your-image-model-id",
+      "protocol": "chat",
       "type": "image",
       "suffix": "image-route",
       "targets": [{ "endpoint": "main" }, { "endpoint": "backup" }]
     },
     "manual/hidden": {
       "id": "your-hidden-model-id",
+      "protocol": "responses",
       "type": "text",
       "endpoint": "main",
       "suffix": "omni"
     },
     "manual/private": {
       "id": "your-private-model-id",
+      "protocol": "anthropic",
       "type": "text",
       "endpoint": "paid"
     }
@@ -255,14 +263,14 @@ Magpie 的插件沙盒限制普通文件下载，因此导出使用可复制文�
 }
 ```
 
-`backup.example` 和 `your-…-model-id` 是占位值，使用时替换为实际地址及真实 ID。
+`backup.example` 和 `your-…-model-id` 是占位值，使用时替换为实际地址及真实 ID。示例展示同一线路关联不同协议的模型，具体可用协议以上游实际支持为准。
 
 ### 线路与顶层字段
 
 | 字段 | 说明 |
 | --- | --- |
 | `routes.<name>.base` | 主机或完整 API 前缀；也接受 `base_url`、`url` |
-| `routes.<name>.protocol` | `chat`、`anthropic`、`responses`、`gemini`、`systemone`；默认 `chat` |
+| `routes.<name>.protocol` | 自动发现默认协议及旧配置默认值；支持五种协议，默认 `chat` |
 | `routes.<name>.discover` | 是否用当前账号读取 `<base>/models` |
 | `routes.<name>.models_url` | 独立的完整目录 URL |
 | `routes.<name>.models` | 分组简写，支持 ID 数组或 ID 到模型设置的映射 |
@@ -285,7 +293,7 @@ Magpie 的插件沙盒限制普通文件下载，因此导出使用可复制文�
 | `base` / `base_url` / `url` | 单个模型的固定 API 前缀，可替代命名线路 |
 | `suffix` | 可选模型路径后缀，留空保留完整地址 |
 | `targets` | 有序主备候选数组；候选可设置 `endpoint`、`base`、`id`、`suffix` |
-| `protocol` / `npm` | 协议或 AI SDK 包；候选之间必须兼容 |
+| `protocol` / `npm` | 此模型的调用协议或 AI SDK 包，优先于线路默认值；用于主备候选，候选之间必须兼容 |
 | `input` / `output` | 自定义模态数组 |
 | `context` / `output_limit` | 上下文长度和输出上限 |
 | `reasoning` / `tool_call` | 推理及工具调用能力 |
@@ -308,6 +316,8 @@ TTS / 转写的模型键最后一段需让 Magpie 识别类型，例如 `tts-voi
 ## 旧账号与旧配置
 
 已有账号无需重新登录。`models`、`extraModels`、`routes`、`endpoints` 及旧账号地址字段继续读取，管理页保存时保留未编辑的高级字段。
+
+旧手动模型会显示其原有效协议，保存时明确写入模型层。仅覆盖目录能力、未绑定线路的旧条目沿用原协议；选择主线路后即可单独设置协议。
 
 地址选择顺序：
 
