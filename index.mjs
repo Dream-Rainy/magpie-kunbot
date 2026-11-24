@@ -29,7 +29,7 @@ import { createRoutes, routeRequest, forwardRequest } from "./lib/routing.mjs"
 import { startDiagnosticService } from "./lib/diagnostic-service.mjs"
 
 const PROVIDER = "kunbot"
-const CLIENT = "magpie-kunbot/0.3.2"
+const CLIENT = "magpie-kunbot/0.4.0"
 
 // The status site: the one address the plugin knows. It serves the catalogs
 // and holds the balance session; the model gateway is a different host, and
@@ -189,6 +189,7 @@ function configuredModels(models, specs, gatewayBase, log = () => {}) {
       modalities: { input, output },
       cost: spec.cost ?? prev?.cost ?? {},
       variants: spec.variants ?? prev?.variants ?? {},
+      ...(spec.decides !== undefined ? { decides: spec.decides } : {}),
       ...(spec.rate !== undefined ? { rate: spec.rate } : prev?.rate !== undefined ? { rate: prev.rate } : {}),
     }
   }
@@ -442,6 +443,7 @@ function hookModel(template, m) {
     ...base,
     id: m.id,
     name: m.name,
+    decides: m.decides === true,
     api: {
       id: m.id,
       // No fallback to the template's address: that is one route's endpoint,
@@ -615,6 +617,7 @@ export const KunbotAntPlugin = async ({ client, directory, magpie }, options = {
         api: "",
         models: {},
       }
+      cfg.provider[PROVIDER].decide = routes.hasDecision
       try {
         const models = await modelTable()
         for (const [k, m] of Object.entries(models)) {

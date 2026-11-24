@@ -2,8 +2,8 @@
 // iframe origin. The host can also inline this file with a CSP hash in web mode.
 ;(async () => {
 const $ = (id) => document.getElementById(id)
-const protocolLabels = { chat: "OpenAI Chat", anthropic: "Anthropic Messages", responses: "OpenAI Responses" }
-const sdks = { chat: "@ai-sdk/openai-compatible", anthropic: "@ai-sdk/anthropic", responses: "@ai-sdk/openai" }
+const protocolLabels = { chat: "OpenAI Chat", anthropic: "Anthropic Messages", responses: "OpenAI Responses", gemini: "Gemini 原生 API", systemone: "System One 决策 API" }
+const sdks = { chat: "@ai-sdk/openai-compatible", anthropic: "@ai-sdk/anthropic", responses: "@ai-sdk/openai", gemini: "@ai-sdk/google", systemone: "@ai-sdk/openai-compatible" }
 const types = { text: "文字对话", vision: "文字 + 看图", image: "图像生成", audio: "语音合成", transcription: "语音转写", video: "视频生成" }
 const clone = (v) => structuredClone(v)
 const object = (v) => v && typeof v === "object" && !Array.isArray(v)
@@ -113,15 +113,17 @@ function renderRoutes() {
     const fields = el("div", { class: "fields" }, [
       field("线路名称", r.name, v => { r.name = v; title.textContent = v || "新线路"; renderModels() }, { placeholder: "主线 / 备线 / 专有" }),
       field("完整 Base URL", r.base, v => { r.base = v; renderModels() }, { type: "url", placeholder: "https://ant.kunbot.org 或完整 API 前缀", spellcheck: "false" }),
-      select("接口协议", r.protocol, protocolLabels, v => { r.protocol = v; renderModels() }),
+      select("接口协议", r.protocol, protocolLabels, v => { r.protocol = v; render() }),
     ])
     const details = el("details", {}, [el("summary", { text: "目录地址与线路标识" }),
       field("模型目录地址（可选，默认 Base URL + /models）", r.modelsURL, v => { r.modelsURL = v }, { class: "wide", placeholder: "https://api.example.com/v1/models", type: "url" }),
       el("p", { class: "hint", text: `线路标识：${r.id}` }),
     ])
+    const protocolHint = r.protocol === "systemone" ? "此线路的模型将作为路由组的决策分类器，不用于普通对话。填写 API 前缀，插件会追加 /systemone。"
+      : r.protocol === "gemini" ? "填写 Gemini 完整 API 前缀（通常以 /v1beta 结尾），使用原生 generateContent 接口。" : ""
     return el("article", { class: "card", "data-route": r.id }, [
       el("div", { class: "card-head" }, [el("div", { class: "card-title" }, [el("span", { class: `badge ${index === 0 ? "first" : ""}`, text: `${index + 1}${index === 0 ? " · 优先" : ""}` }), title]), actions]),
-      fields,
+      fields, ...(protocolHint ? [el("p", { class: "hint", text: protocolHint })] : []),
       check("自动发现模型", r.discover, v => { r.discover = v }, "通过当前账号获取 /models 目录"), details,
     ])
   }))
@@ -149,7 +151,11 @@ function previewAddresses(m, node) {
       if (!base) return null
       const suffix = validSuffix(target.suffix ?? m.suffix)
       const cleanBase = validURL(base, "线路地址")
-      const address = suffix ? `${cleanBase.replace(/\/v1$/, "")}/${suffix}${suffix === "v1" || suffix.endsWith("/v1") ? "" : "/v1"}` : cleanBase
+      const npm = target.npm ?? sdks[target.protocol] ?? m.raw.npm ?? sdks[m.raw.protocol] ?? sdks[route?.protocol] ?? route?.protocol
+      const google = npm === sdks.gemini
+      const root = cleanBase.replace(google ? /\/v1(?:beta)?$/ : /\/v1$/, "")
+      const versioned = google ? /(?:^|\/)v1(?:beta)?$/.test(suffix) : /(?:^|\/)v1$/.test(suffix)
+      const address = suffix ? `${root}/${suffix}${versioned ? "" : google ? "/v1beta" : "/v1"}` : cleanBase
       return el("div", { class: "address-line" }, [el("span", { text: route?.name || "固定地址" }), el("code", { text: address })])
     }).filter(Boolean)
     node.replaceChildren(...(lines.length ? [el("p", { class: "hint", text: "默认 API 前缀" }), ...lines] : [el("p", { class: "hint", text: "选择线路后显示地址；已有目录模型可保留目录地址。" })]))
@@ -181,7 +187,7 @@ function renderModels() {
     ]), ...(m.raw.targets?.length > 2 ? [el("p", { class: "hint", text: "此模型有多条高级候选线路；未修改线路选择时会完整保留。" })] : []), ...(m.raw.targets?.some(t => t.suffix != null) ? [el("p", { class: "hint", text: "高级候选中单独指定的后缀优先于模型后缀；修改主备选择会重新生成候选。" })] : [])])
     return el("article", { class: "card", "data-model": index }, [
       el("div", { class: "card-head" }, [el("div", { class: "card-title" }, [el("span", { class: "badge", text: types[m.type] ?? "模型" }), title]), el("div", { class: "actions" }, [button("移除", () => { modelRows.splice(index, 1); markDirty(); render() }, { class: "remove", "aria-label": `移除模型 ${m.id}` })])]),
-      fields, routing, el("p", { class: "hint suffix-hint", text: "后缀自动补齐 /v1，应用于主备线路。留空使用线路的完整地址。" }), addresses, advanced,
+      fields, routing, el("p", { class: "hint suffix-hint", text: "后缀按协议补齐版本：Gemini 为 /v1beta，其他为 /v1。留空使用线路完整地址。" }), addresses, advanced,
     ])
   }))
 }
@@ -257,7 +263,7 @@ $("include-catalog").addEventListener("change", markDirty)
 $("export-config").addEventListener("click", () => {
   if (!loaded || saving) return
   try {
-    const json = transfer.encode(serialize(), "0.3.2")
+    const json = transfer.encode(serialize(), "0.4.0")
     resetTransfer(); $("export-panel").hidden = false; $("export-text").value = json
     transferStatus("已生成当前表单的备份；导出不会保存配置。", "success")
   } catch (e) { transferStatus(e.message, "error") }

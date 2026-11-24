@@ -1,10 +1,27 @@
-import test from "node:test"
+import test, { it } from "node:test"
 import assert from "node:assert/strict"
 import "../page/config-transfer.js"
 import { createRoutes } from "../lib/routing.mjs"
 import { _internal } from "../index.mjs"
 
 const { encode, decode, validate, LIMIT } = globalThis.KunbotConfigTransfer
+
+it('should retain native protocols when Gemini and System One configurations are exported and imported', () => {
+  // Arrange
+  const options = { includeCatalog: false, routes: { google: { base: "https://google.example/v1beta", protocol: "gemini" }, decide: { base: "https://decide.example/v1", protocol: "systemone" } }, models: { native: { id: "g", endpoint: "google", suffix: "relay/v1beta" }, classifier: { id: "c", endpoint: "decide" } } }
+  // Act
+  const result = decode(encode(options, "0.4.0"))
+  // Assert
+  assert.deepEqual(result.options, options)
+  assert.deepEqual(result.summary, { routes: 2, models: 2, includeCatalog: false })
+})
+
+it('should reject mixed native protocols when a System One fallback points at a Chat endpoint', () => {
+  // Arrange
+  const json = JSON.stringify({ routes: { decide: { base: "https://decide.example/v1", protocol: "systemone" }, chat: { base: "https://chat.example/v1", protocol: "chat" } }, models: { classifier: { id: "c", targets: [{ endpoint: "decide" }, { endpoint: "chat" }] } } })
+  // Act / Assert
+  assert.throws(() => decode(json), /主备线路需要使用相同协议/)
+})
 const fixture = () => ({
   includeCatalog: false, diagnosticsPort: 37747, discoveryTimeoutMs: 9000,
   routes: {

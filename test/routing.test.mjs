@@ -1,4 +1,4 @@
-import test from "node:test"
+import test, { it } from "node:test"
 import assert from "node:assert/strict"
 import { KunbotAntPlugin, _internal } from "../index.mjs"
 import { createRoutes, endpointOverrides, forwardRequest, routeRequest, _routing } from "../lib/routing.mjs"
@@ -18,6 +18,123 @@ async function plugin(options) {
   const p = await KunbotAntPlugin({}, options)
   return { p, models: await p.provider.models({ models: {} }, { auth: auth() }), loader: await p.auth.loader(async () => auth()) }
 }
+
+it('should discover native Gemini metadata when Google returns paginated model lists', async t => {
+  // Arrange
+  const requests = []
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, headers: new Headers(init.headers) })
+    return json(new URL(url).searchParams.has("pageToken")
+      ? { models: [{ name: "models/gemini-b", displayName: "Gemini B", supportedGenerationMethods: ["generateContent"] }] }
+      : { models: [{ name: "models/gemini-a", displayName: "Gemini A", inputTokenLimit: 8192, outputTokenLimit: 2048, supportedGenerationMethods: ["generateContent"] }, { name: "models/embedding-only", supportedGenerationMethods: ["embedContent"] }], nextPageToken: "page-two" })
+  })
+  const p = await KunbotAntPlugin({}, { includeCatalog: false, routes: { google: { base: "https://google.example/v1beta", protocol: "gemini", discover: true } } })
+  // Act
+  const models = await p.provider.models({ models: {} }, { auth: auth("google-key") })
+  // Assert
+  assert.deepEqual(Object.keys(models), ["gemini-a", "gemini-b"])
+  assert.equal(models["gemini-a"].name, "Gemini A")
+  assert.equal(models["gemini-a"].api.npm, "@ai-sdk/google")
+  assert.deepEqual(models["gemini-a"].limit, { context: 8192, output: 2048 })
+  assert.deepEqual(requests.map(r => r.url), ["https://google.example/v1beta/models", "https://google.example/v1beta/models?pageToken=page-two"])
+  assert.deepEqual(requests.map(r => r.headers.get("x-goog-api-key")), ["google-key", "google-key"])
+  assert.equal(requests[0].headers.has("authorization"), false)
+})
+
+it('should replace the Gemini path model and credential when a streaming request switches to backup', async t => {
+  // Arrange
+  const requests = [], body = { contents: [{ role: "user", parts: [{ text: "hello" }] }] }
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, body: JSON.parse(init.body), headers: new Headers(init.headers) })
+    return requests.length === 1 ? json({}, 503) : new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } })
+  })
+  const { models, loader } = await plugin({ includeCatalog: false,
+    routes: { main: { base: "https://google.example/v1beta", protocol: "gemini" }, backup: { base: "https://mirror.example/google", protocol: "gemini" } },
+    models: { native: { id: "models/alpha/model", targets: [{ endpoint: "main" }, { endpoint: "backup", id: "models/beta-model" }] } },
+  })
+  // Act
+  const response = await loader.fetch(`${models.native.api.url}/models/ignored:streamGenerateContent?alt=sse`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": "stale-key", authorization: "Bearer stale-key" }, body: JSON.stringify(body) })
+  // Assert
+  assert.equal(response.status, 200)
+  assert.deepEqual(requests.map(r => r.url), ["https://google.example/v1beta/models/alpha%2Fmodel:streamGenerateContent?alt=sse", "https://mirror.example/google/models/beta-model:streamGenerateContent?alt=sse"])
+  assert.deepEqual(requests.map(r => r.body), [body, body])
+  assert.deepEqual(requests.map(r => r.headers.get("x-goog-api-key")), ["test-key-A", "test-key-A"])
+  assert.equal(requests[0].headers.has("authorization"), false)
+  assert.equal(requests[0].headers.has("x-api-key"), false)
+})
+
+it('should preserve Gemini API versions when models use complete bases or relative suffixes', async t => {
+  // Arrange
+  const urls = []
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async url => { urls.push(url); return json({}) })
+  const { models, loader } = await plugin({ includeCatalog: false,
+    routes: { google: { base: "https://google.example/v1beta", protocol: "gemini" } },
+    models: { implicit: { id: "g", endpoint: "google", suffix: "relay" }, explicit: { id: "g", endpoint: "google", suffix: "relay/v1beta" }, complete: { id: "g", endpoint: "google" } },
+  })
+  // Act
+  for (const model of Object.values(models)) await loader.fetch(`${model.api.url}/models/g:generateContent`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"contents":[]}' })
+  // Assert
+  assert.deepEqual(urls, ["https://google.example/relay/v1beta/models/g:generateContent", "https://google.example/relay/v1beta/models/g:generateContent", "https://google.example/v1beta/models/g:generateContent"])
+})
+
+it('should expose System One decision flags when the provider also contains conversational models', async () => {
+  // Arrange
+  const p = await KunbotAntPlugin({}, { includeCatalog: false,
+    routes: { decide: { base: "https://decision.example/v1", protocol: "systemone" }, chat: { base: "https://chat.example/v1" } },
+    models: { classifier: { id: "classifier-id", endpoint: "decide" }, conversation: { id: "chat-id", endpoint: "chat" } },
+  })
+  const config = {}
+  // Act
+  await p.config(config)
+  const models = await p.provider.models({ models: { template: { decides: true } } }, { auth: auth() })
+  // Assert
+  assert.equal(config.provider.kunbot.decide, true)
+  assert.equal(config.provider.kunbot.models.classifier.decides, true)
+  assert.equal(models.classifier.decides, true)
+  assert.equal(models.conversation.decides, false)
+  assert.equal(models.classifier.api.npm, "@ai-sdk/openai-compatible")
+})
+
+it('should preserve System One questions and state when a retry uses a different upstream model id', async t => {
+  // Arrange
+  const sent = [], questions = { ok: { type: "noul", instructions: "Is this a test?" } }, state = { text: "ping" }
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => { sent.push({ url, body: JSON.parse(init.body), key: init.headers.get("authorization") }); return json({ answers: {} }, sent.length === 1 ? 503 : 200) })
+  const { models, loader } = await plugin({ includeCatalog: false,
+    routes: { main: { base: "https://decide.example/v1", protocol: "systemone" }, backup: { base: "https://backup.example/decision/v1", protocol: "systemone" } },
+    models: { classifier: { id: "primary-decider", targets: [{ endpoint: "main" }, { endpoint: "backup", id: "backup-decider" }] } },
+  })
+  // Act
+  const response = await loader.fetch(`${models.classifier.api.url}/systemone`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "display-id", questions, state }) })
+  // Assert
+  assert.equal(models.classifier.decides, true)
+  assert.equal(response.status, 200)
+  assert.deepEqual(sent, [
+    { url: "https://decide.example/v1/systemone", body: { model: "primary-decider", questions, state }, key: "Bearer test-key-A" },
+    { url: "https://backup.example/decision/v1/systemone", body: { model: "backup-decider", questions, state }, key: "Bearer test-key-A" },
+  ])
+})
+
+it('should keep System One separate from Chat when discovery returns the same model id', async t => {
+  // Arrange
+  const posts = []
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    if (init.method !== "POST") return list(["shared-id"])
+    posts.push(url); return json({}, posts.length === 1 ? 503 : 200)
+  })
+  const { models, loader } = await plugin({ includeCatalog: false,
+    routes: { main: { base: "https://decide.example/v1", protocol: "systemone", discover: true }, backup: { base: "https://chat.example/v1", protocol: "chat", discover: true } }, fallback: ["main", "backup"],
+  })
+  // Act
+  const response = await loader.fetch(`${models["shared-id"].api.url}/systemone`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"model":"shared-id","questions":{},"state":{}}' })
+  // Assert
+  assert.equal(response.status, 503)
+  assert.deepEqual(posts, ["https://decide.example/v1/systemone"])
+})
 
 test("model suffixes normalize relative paths and add exactly one trailing v1", () => {
   for (const [base, suffix, expected] of [

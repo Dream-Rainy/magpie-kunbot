@@ -1,7 +1,7 @@
 // Classic script shared by the native sandbox and the service-hosted page.
 ;(() => {
   const FORMAT = "magpie-kunbot-config", LIMIT = 1024 * 1024
-  const sdks = { chat: "@ai-sdk/openai-compatible", anthropic: "@ai-sdk/anthropic", responses: "@ai-sdk/openai" }
+  const sdks = { chat: "@ai-sdk/openai-compatible", anthropic: "@ai-sdk/anthropic", responses: "@ai-sdk/openai", gemini: "@ai-sdk/google", systemone: "@ai-sdk/openai-compatible" }
   const kinds = new Set(["text", "chat", "vision", "image", "image-generation", "image generation", "img", "draw", "audio", "tts", "speech", "text-to-speech", "transcription", "transcribe", "asr", "stt", "speech-to-text", "video", "video-generation"])
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value)
   const fail = (path, message) => { throw new Error(`${path}：${message}`) }
@@ -14,6 +14,7 @@
   }
   const baseOf = value => value.base ?? value.base_url ?? value.url
   const npmOf = (value, fallback = sdks.chat) => value.npm ?? sdks[value.protocol] ?? fallback
+  const decisionOf = (value, fallback = false) => value.protocol ? value.protocol === "systemone" : value.npm ? false : fallback
   function safeTree(value, path = "配置", depth = 0) {
     if (depth > 64) fail(path, "嵌套层级过多。")
     if (!value || typeof value !== "object") return
@@ -37,7 +38,7 @@
   }
   function address(value, path) {
     for (const field of ["base", "base_url", "url"]) if (value[field] !== undefined) url(value[field], `${path}.${field}`)
-    if (value.protocol !== undefined && !Object.hasOwn(sdks, value.protocol)) fail(`${path}.protocol`, "请选择 chat、anthropic 或 responses，其他 SDK 请使用 npm 字段。")
+    if (value.protocol !== undefined && !Object.hasOwn(sdks, value.protocol)) fail(`${path}.protocol`, "请选择 chat、anthropic、responses、gemini 或 systemone，其他 SDK 请使用 npm 字段。")
     if (value.npm !== undefined) text(value.npm, `${path}.npm`)
     suffix(value.suffix, `${path}.suffix`)
   }
@@ -89,7 +90,8 @@
         const endpoint = candidate.endpoint ?? spec.endpoint
         const route = endpoint ? routes[endpoint] : undefined
         if (spec.targets && !baseOf(candidate) && !baseOf(spec) && !route) fail(at, "需要线路或固定地址。")
-        protocols.push(npmOf(candidate, npmOf(spec, route ? npmOf(route) : sdks.chat)))
+        const decides = decisionOf(candidate, decisionOf(spec, route ? decisionOf(route) : false))
+        protocols.push(`${decides ? "systemone:" : ""}${npmOf(candidate, npmOf(spec, route ? npmOf(route) : sdks.chat))}`)
       }
       if (protocols.some(protocol => protocol !== protocols[0])) fail(`${path}.targets`, "主备线路需要使用相同协议。")
     }

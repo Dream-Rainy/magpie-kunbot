@@ -2,11 +2,12 @@
 
 kunbot 的 [Magpie](https://usemagpie.ai/docs/zh/plugins) 提供商插件。在一个 `kunbot` 提供商中管理不同地址的模型，支持主备切换、多账号和请求诊断。
 
-当前插件版本：**0.3.2**。管理页、登录及模型测试已在 **Magpie v0.1.4267** 验证。
+当前插件版本：**0.4.0**。新增协议已通过 **Magpie v0.1.4267 原生插件宿主**集成验证。
 
 ## 功能
 
 - 使用表单管理线路和模型，无需日常手写 Options JSON。
+- 支持 Chat、Responses、Anthropic Messages、Gemini 原生 API 和 System One 决策 API。
 - 合并多条线路暴露的模型；同名且协议一致时优先主线，失败后尝试备线。
 - 为专有、隐藏、脱敏生图等目录外模型指定真实 ID、类型和独立地址。
 - 多个模型共用一个主机，分别填写模型路径后缀。
@@ -88,6 +89,7 @@ https://ant.kunbot.org/image-route/v1/images/generations
 
 - `image-route`、`/image-route/`、`image-route/v1` 均生成 `…/image-route/v1`。
 - 线路末尾已有 `/v1` 时，将版本放到后缀之后；其余线路路径保留。
+- Gemini 线路的后缀默认补齐 `/v1beta`，线路末尾的 `/v1beta` 或 `/v1` 移到后缀之后；后缀已包含这两种版本之一时不再追加。
 - 后缀留空时，完整沿用线路地址，不自动添加 `/v1`。
 - 后缀接受字母、数字、`-._~` 和 `/` 分隔；不接受完整网址、查询参数、空路径段或 `.` / `..` 路径段。
 
@@ -100,9 +102,22 @@ https://ant.kunbot.org/image-route/v1/images/generations
 | 专有 | `https://anthropic.kunbot.art/v1` |
 | omni | `https://anthropic.kunbot.org/omni/v1` |
 
-模型选择对应线路，后缀留空即可。线路协议可选 OpenAI Chat、Anthropic Messages 或 OpenAI Responses，按上游实际接口选择；域名中的 `anthropic` 或模型名称不能代替协议设置。
+模型选择对应线路，后缀留空即可。线路协议可选 OpenAI Chat、Anthropic Messages、OpenAI Responses、Gemini 原生 API 或 System One 决策 API，按上游实际接口选择；域名或模型名称不能代替协议设置。
 
-图片生成沿用 OpenAI Images 接口；普通聊天的协议选择不会把生图请求变成聊天请求。
+Chat 等线路的图片生成沿用 OpenAI Images 接口；Gemini 线路使用原生 `generateContent`，以 `responseModalities` 请求图像输出。
+
+### Gemini 与 System One
+
+| 线路协议 | `protocol` 值 | 完整 Base URL 示例 | 用途 |
+| --- | --- | --- | --- |
+| Gemini 原生 API | `gemini` | `https://gateway.example/v1beta` | 原生文字、视觉和图像请求 |
+| System One 决策 API | `systemone` | `https://gateway.example/v1` | 路由组的决策分类器 |
+
+上述地址均为占位示例。线路后缀留空时完整沿用地址；共用主机时也可以按模型设置后缀，Gemini 默认补齐 `/v1beta`，System One 补齐 `/v1`。
+
+Gemini 的调用地址为 `<base>/models/<真实ID>:generateContent`，流式请求使用 `:streamGenerateContent?alt=sse`，认证使用当前账号的 `x-goog-api-key`。模型 ID 位于路径中，主备 ID 不同时会分别替换路径，不向原生 JSON 请求体加入 `model` 字段。
+
+System One 请求 `<base>/systemone`，发送 `model`、`questions`、`state`。插件自动声明决策能力，并将该线路上的模型标记为决策模型，供 Magpie 路由组的分类器选择；这些模型不用于普通对话。登录仍使用原有账号和 API Key。
 
 ### 自动发现与公共目录
 
@@ -117,6 +132,8 @@ https://ant.kunbot.org/image-route/v1/images/generations
 ```json
 { "data": [{ "id": "model-a" }, { "id": "model-b" }] }
 ```
+
+Gemini 线路同时接受原生 `models[]` 列表，读取 `name`、`displayName`、输入和输出限制，按 `nextPageToken` 加载后续页面；原生列表中只支持嵌入等操作的模型不会作为生成模型列出。
 
 需要独立目录地址时，展开 **目录地址与线路标识**，填写模型目录地址。发现仍按线路查询，不会逐个拼接模型后缀；共用裸主机只用于手动模型时，可关闭发现。
 
@@ -160,6 +177,7 @@ https://ant.kunbot.org/image-route/v1/images/generations
 | 已交付给客户端的流式响应中断 | 报告错误，不拼接另一条流 |
 
 主备线路需使用同一协议。不同协议的请求体结构不同，不能只替换地址来切换。
+System One 与普通 Chat 也分别判断，不因底层 SDK 包名相同而混成主备。
 
 ## 模型测试与诊断
 
@@ -171,14 +189,14 @@ https://ant.kunbot.org/image-route/v1/images/generations
 4. 点击 **发送测试（可能计费）**，查看实际尝试的线路、HTTP 状态、耗时、响应或异常。
 5. 可取消测试或复制诊断；账号登录状态变化后，点击 **重新加载账号与模型**。
 
-请求体中的 `model` 会替换为所选模型的真实 ID；备线 ID 不同时，诊断也会显示替换后的值。认证头、Cookie、凭据字段及上游回显的当前 Key 会隐藏。
+Chat、Messages、Responses 和 System One 请求体中的 `model` 会替换为所选模型的真实 ID；Gemini 则替换路径中的 ID。备线 ID 不同时，诊断也会显示各自的值。认证头、Cookie、凭据字段及上游回显的当前 Key 会隐藏。
 
 支持范围：
 
-- 支持 Chat、Anthropic Messages、Responses、生图和语音合成的 JSON 请求。
+- 支持 Chat、Anthropic Messages、Responses、Gemini、System One、生图和语音合成的 JSON 请求。
 - 暂不提供文件上传、图片编辑或语音转写测试。
 - 直接请求插件上游，复用模型地址、后缀、账号覆盖及主备逻辑；不经过 Magpie 的 agent 协议转换或账号调度，网络使用宿主的默认代理。
-- 默认关闭流式输出，可手动修改 JSON 验证流式响应。
+- 默认非流式输出；Gemini 可选择 `streamGenerateContent` 操作，其他对话协议可修改 JSON 的流式设置。
 - 超时可选 15–120 秒；请求体和响应读取上限均为 64 KiB。图片 base64 和二进制用摘要表示。
 - 结果包含填写的测试内容和脱敏响应，仅在本页保留，不写入插件配置或诊断日志。
 
@@ -244,7 +262,7 @@ Magpie 的插件沙盒限制普通文件下载，因此导出使用可复制文�
 | 字段 | 说明 |
 | --- | --- |
 | `routes.<name>.base` | 主机或完整 API 前缀；也接受 `base_url`、`url` |
-| `routes.<name>.protocol` | `chat`、`anthropic`、`responses`；默认 `chat` |
+| `routes.<name>.protocol` | `chat`、`anthropic`、`responses`、`gemini`、`systemone`；默认 `chat` |
 | `routes.<name>.discover` | 是否用当前账号读取 `<base>/models` |
 | `routes.<name>.models_url` | 独立的完整目录 URL |
 | `routes.<name>.models` | 分组简写，支持 ID 数组或 ID 到模型设置的映射 |
@@ -328,7 +346,7 @@ TTS / 转写的模型键最后一段需让 Magpie 识别类型，例如 `tts-voi
 npm test
 ```
 
-当前 44 项自动化测试使用模拟请求与临时账号，不使用真实 Key 或付费模型，覆盖路由、诊断及配置备份的往返与校验。另已用 Magpie v0.1.4267 验证配置保存、登录、模型测试和返回流程，以及原始页与服务版配置页的导出、文件/粘贴导入、取消、草稿保存、重新载入和窄屏。Windows 虚拟主机失效场景使用浏览器模拟，未在真实 Windows WebView2 上运行。
+自动化测试使用模拟请求与临时账号，不使用真实 Key 或付费模型，覆盖路由、诊断及配置备份的往返与校验。新增 Gemini/System One 已用 Magpie v0.1.4267 原生插件宿主和本地 HTTP 上游验证目录、SDK 与决策标记、鉴权和主备 ID。原有配置保存、登录、测试返回及导入导出流程此前已通过同版本浏览器验证；Windows 虚拟主机失效场景使用浏览器模拟，未在真实 Windows WebView2 上运行。
 
 | 文件 | 用途 |
 | --- | --- |

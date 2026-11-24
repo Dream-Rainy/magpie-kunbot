@@ -1,4 +1,4 @@
-import test from "node:test"
+import test, { it } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -7,7 +7,87 @@ import { request } from "node:http"
 import { createDiagnostics, diagnosticTemplate, redact } from "../lib/diagnostics.mjs"
 import { startDiagnosticService } from "../lib/diagnostic-service.mjs"
 import { createRoutes } from "../lib/routing.mjs"
-import { _internal } from "../index.mjs"
+import { _internal, KunbotAntPlugin } from "../index.mjs"
+
+async function nativeDiagnostics(t, options) {
+  const directory = await mkdtemp(join(tmpdir(), "kunbot-native-protocol-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({ kunbot: { type: "api", key: "native-fixture-key" } }))
+  const hooks = await KunbotAntPlugin({}, { ...options, includeCatalog: false }), config = {}
+  await hooks.config(config)
+  return createDiagnostics({ directory, client: "native-diagnostics-test", modelTable: async () => config.provider.kunbot.models })
+}
+
+it('should generate native protocol bodies when Gemini image or System One models are selected', () => {
+  // Arrange
+  const gemini = { id: "g", provider: { npm: "@ai-sdk/google" }, modalities: { output: ["image"] } }
+  const systemone = { id: "c", decides: true, provider: { npm: "@ai-sdk/openai-compatible" } }
+  // Act
+  const image = diagnosticTemplate(gemini), decision = diagnosticTemplate(systemone)
+  // Assert
+  assert.equal(image.operation, "/generateContent")
+  assert.equal(image.body.contents[0].parts[0].text, "A small blue circle on a white background")
+  assert.deepEqual(image.body.generationConfig.responseModalities, ["TEXT", "IMAGE"])
+  assert.equal(Object.hasOwn(image.body, "model"), false)
+  assert.equal(decision.operation, "/systemone")
+  assert.deepEqual(decision.body, { model: "c", state: { text: "ping" }, questions: { ok: { type: "noul", instructions: "Is this a test?" } } })
+})
+
+it('should send the previewed Gemini requests when a native image test switches to backup', async t => {
+  // Arrange
+  const sent = []
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    sent.push({ url, body: JSON.parse(init.body), key: init.headers.get("x-goog-api-key") })
+    return Response.json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "a".repeat(64) } }] } }] }, { status: sent.length === 1 ? 503 : 200 })
+  })
+  const diagnostics = await nativeDiagnostics(t, { routes: { main: { base: "https://google.example/v1beta", protocol: "gemini" }, backup: { base: "https://mirror.example/v1beta", protocol: "gemini" } }, models: { image: { id: "g-primary", type: "image", targets: [{ endpoint: "main" }, { endpoint: "backup", id: "g-backup" }] } } })
+  const [model] = await diagnostics.models("kunbot")
+  const input = { account: "kunbot", model: "image", operation: model.operation, body: model.body }
+  // Act
+  const preview = await diagnostics.run({ ...input, preview: true }), requestsBeforeSend = sent.length
+  const report = await diagnostics.run(input)
+  // Assert
+  assert.equal(requestsBeforeSend, 0)
+  assert.equal(report.ok, true)
+  assert.deepEqual(preview.attempts.map(a => a.request.url), ["https://google.example/v1beta/models/g-primary:generateContent", "https://mirror.example/v1beta/models/g-backup:generateContent"])
+  assert.deepEqual(sent.map(r => r.url), preview.attempts.map(a => a.request.url))
+  assert.deepEqual(sent.map(r => r.body), [model.body, model.body])
+  assert.deepEqual(sent.map(r => r.key), ["native-fixture-key", "native-fixture-key"])
+  assert.equal(report.attempts[0].request.headers["x-goog-api-key"], "[REDACTED]")
+  assert.equal(report.attempts[1].response.body.candidates[0].content.parts[0].inlineData.data, "[image data omitted; 64 characters]")
+  assert.equal(JSON.stringify(report).includes("native-fixture-key"), false)
+})
+
+it('should preserve decision answers when the diagnostics page sends a System One question', async t => {
+  // Arrange
+  const sent = [], answers = { ok: { choice: true, score: 0.9, confidence: 0.9 } }
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async (url, init) => { sent.push({ url, body: JSON.parse(init.body) }); return Response.json({ model: "c", answers }) })
+  const diagnostics = await nativeDiagnostics(t, { routes: { decide: { base: "https://decide.example/v1", protocol: "systemone" } }, models: { classifier: { id: "c", endpoint: "decide" } } })
+  const [model] = await diagnostics.models("kunbot")
+  // Act
+  const report = await diagnostics.run({ account: "kunbot", model: "classifier", operation: model.operation, body: model.body })
+  // Assert
+  assert.equal(report.ok, true)
+  assert.deepEqual(sent, [{ url: "https://decide.example/v1/systemone", body: { model: "c", state: { text: "ping" }, questions: { ok: { type: "noul", instructions: "Is this a test?" } } } }])
+  assert.deepEqual(report.attempts[0].response.body.answers, answers)
+})
+
+it('should summarize Gemini image data when the JSON response exceeds the diagnostics read limit', async t => {
+  // Arrange
+  t.after(() => t.mock.restoreAll())
+  t.mock.method(globalThis, "fetch", async () => Response.json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "a".repeat(100000) } }] } }] }))
+  const diagnostics = await nativeDiagnostics(t, { routes: { google: { base: "https://google.example/v1beta", protocol: "gemini" } }, models: { image: { id: "g", type: "image", endpoint: "google" } } })
+  const [model] = await diagnostics.models("kunbot")
+  // Act
+  const report = await diagnostics.run({ account: "kunbot", model: "image", operation: model.operation, body: model.body })
+  // Assert
+  assert.equal(report.status, 200)
+  assert.equal(report.attempts[0].response.truncated, true)
+  assert.match(report.attempts[0].response.body, /image data omitted/)
+  assert.doesNotMatch(report.attempts[0].response.body, /a{256}/)
+})
 
 const secret = "fixture-diagnostics-personal-key"
 const fixtureAuth = {
